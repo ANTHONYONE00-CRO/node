@@ -38,6 +38,13 @@ declare namespace CacheHandler {
      * @default 'shared'
      */
     type?: 'shared' | 'private'
+
+    /**
+     * Array of origins to cache. Only requests to these origins will be cached.
+     * Supports strings (case insensitive) and RegExp patterns.
+     * @default undefined (cache all origins)
+     */
+    origins?: (string | RegExp)[]
   }
 
   export interface CacheControlDirectives {
@@ -70,7 +77,7 @@ declare namespace CacheHandler {
     statusCode: number
     statusMessage: string
     headers: Record<string, string | string[]>
-    vary?: Record<string, string | string[]>
+    vary?: Record<string, string | string[] | null>
     etag?: string
     cacheControlDirectives?: CacheControlDirectives
     cachedAt: number
@@ -88,9 +95,9 @@ declare namespace CacheHandler {
     statusCode: number
     statusMessage: string
     headers: Record<string, string | string[]>
-    vary?: Record<string, string | string[]>
+    vary?: Record<string, string | string[] | null>
     etag?: string
-    body: null | Readable | Iterable<Buffer> | AsyncIterable<Buffer> | Buffer | Iterable<string> | AsyncIterable<string> | string
+    body?: Readable | Iterable<Buffer> | AsyncIterable<Buffer> | Buffer | Iterable<string> | AsyncIterable<string> | string
     cacheControlDirectives: CacheControlDirectives,
     cachedAt: number
     staleAt: number

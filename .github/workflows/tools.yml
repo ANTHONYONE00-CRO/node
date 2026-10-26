@@ -19,32 +19,33 @@ on:
           - amaro
           - brotli
           - c-ares
-          - cjs-module-lexer
+          - merve
           - corepack
-          - doc
-          - github_reporter
           - googletest
           - gyp-next
           - histogram
           - icu
-          # - libuv
+          - inspector_protocol
+          - libuv
           - llhttp
           - minimatch
           - nbytes
+          - nixpkgs-unstable
           - nghttp2
           - nghttp3
           - ngtcp2
           - postject
           - root-certificates
           - simdjson
-          - simdutf
           - sqlite
+          - test426-fixtures
           - undici
           - uvwasi
           - zlib
+          - zstd
 
 env:
-  PYTHON_VERSION: '3.12'
+  PYTHON_VERSION: '3.14'
 
 permissions:
   contents: read
@@ -52,6 +53,7 @@ permissions:
 jobs:
   tools-deps-update:
     if: github.repository == 'nodejs/node' || github.event_name == 'workflow_dispatch'
+    # cannot use ubuntu-slim here because some update scripts require Docker
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false  # Prevent other jobs from aborting if one fails
@@ -105,11 +107,11 @@ jobs:
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
-          - id: cjs-module-lexer
+          - id: merve
             subsystem: deps
             label: dependencies
             run: |
-              ./tools/dep_updaters/update-cjs-module-lexer.sh > temp-output
+              ./tools/dep_updaters/update-merve.sh > temp-output
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
@@ -119,27 +121,11 @@ jobs:
             run: |
               make corepack-update
               echo "NEW_VERSION=$(node deps/corepack/dist/corepack.js --version)" >> $GITHUB_ENV
-          - id: doc
+          - id: doc-kit
             subsystem: tools
             label: tools
             run: |
-              cd tools/doc
-              npm ci
-              NEW_VERSION=$(npm outdated --parseable | cut -d: -f4 | xargs)
-              if [ "$NEW_VERSION" != "" ]; then
-                echo "NEW_VERSION=new version" >> $GITHUB_ENV
-                rm -rf package-lock.json node_modules
-                # Include $NEW_VERSION to explicitly update the package.json
-                # entry for the dependency and also so that semver-major updates
-                # are not skipped.
-                npm install --ignore-scripts $NEW_VERSION
-                npm install --ignore-scripts
-              fi
-          - id: github_reporter
-            subsystem: tools
-            label: tools
-            run: |
-              ./tools/dep_updaters/update-github-reporter.sh > temp-output
+              ./tools/dep_updaters/update-doc.sh > temp-output
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
@@ -175,17 +161,22 @@ jobs:
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
-          # libuv update was disabled because of Feb 14, 2024 security release
-          # modified the bundled version of libuv, we cannot automatically update
-          # libuv without potentially undoing those changes.
-          # - id: libuv
-          #   subsystem: deps
-          #   label: dependencies
-          #   run: |
-          #     ./tools/dep_updaters/update-libuv.sh > temp-output
-          #     cat temp-output
-          #     tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
-          #     rm temp-output
+          - id: inspector_protocol
+            subsystem: deps
+            label: dependencies, inspector
+            run: |
+              ./tools/dep_updaters/update-inspector-protocol.sh > temp-output
+              cat temp-output
+              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
+              rm temp-output
+          - id: libuv
+            subsystem: deps
+            label: dependencies
+            run: |
+              ./tools/dep_updaters/update-libuv.sh > temp-output
+              cat temp-output
+              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
+              rm temp-output
           - id: llhttp
             subsystem: deps
             label: dependencies
@@ -207,6 +198,17 @@ jobs:
             label: dependencies
             run: |
               ./tools/dep_updaters/update-nbytes.sh > temp-output
+              cat temp-output
+              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
+              rm temp-output
+          - id: nixpkgs-unstable
+            subsystem: tools
+            # dont-land labels are there so we can guarantee released versions of
+            # Node.js can be built with the same env along the whole release line life – or
+            # at least we can detect and document necessary updates.
+            label: tools, dont-land-on-v20.x, dont-land-on-v22.x, dont-land-on-v24.x, dont-land-on-v25.x
+            run: |
+              ./tools/dep_updaters/update-nixpkgs-pin.sh > temp-output
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
@@ -255,19 +257,19 @@ jobs:
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
-          - id: simdutf
-            subsystem: deps
-            label: dependencies
-            run: |
-              ./tools/dep_updaters/update-simdutf.sh > temp-output
-              cat temp-output
-              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
-              rm temp-output
           - id: sqlite
             subsystem: deps
             label: dependencies, sqlite
             run: |
               ./tools/dep_updaters/update-sqlite.sh > temp-output
+              cat temp-output
+              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
+              rm temp-output
+          - id: test426-fixtures
+            subsystem: test
+            label: test
+            run: |
+              bash tools/dep_updaters/update-test426-fixtures.sh > temp-output
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
@@ -295,16 +297,34 @@ jobs:
               cat temp-output
               tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
               rm temp-output
+          - id: zstd
+            subsystem: deps
+            label: dependencies, zlib
+            run: |
+              ./tools/dep_updaters/update-zstd.sh > temp-output
+              cat temp-output
+              tail -n1 temp-output | grep "NEW_VERSION=" >> "$GITHUB_ENV" || true
+              rm temp-output
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Setup Git config
+        run: |
+           git config --global user.name "Node.js GitHub Bot"
+           git config --global user.email "github-bot@iojs.org"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         if: github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id
         with:
           persist-credentials: false
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        if: matrix.id == 'icu' && (github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id)
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        if: |
+          (matrix.id == 'icu' || matrix.id == 'inspector_protocol') &&
+          (github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id)
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          allow-prereleases: true
+      - name: Set up Nix
+        if: matrix.id == 'nixpkgs-unstable' && (github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id)
+        uses: cachix/install-nix-action@2126ae7fc54c9df00dd18f7f18754393182c73cd  # v31.9.1
       - run: ${{ matrix.run }}
         if: github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id
         env:
@@ -313,17 +333,15 @@ jobs:
         if: env.COMMIT_MSG == '' && (github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id)
         run: |
           echo "COMMIT_MSG=${{ matrix.subsystem }}: update ${{ matrix.id }} to ${{ env.NEW_VERSION }}" >> "$GITHUB_ENV"
-      - uses: gr2m/create-or-update-pull-request-action@86ec1766034c8173518f61d2075cc2a173fb8c97  # v1.9.4
+      - uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0  # v8.1.0
         if: github.event_name == 'schedule' || inputs.id == 'all' || inputs.id == matrix.id
         # Creates a PR or update the Action's existing PR, or
         # no-op if the base branch is already up-to-date.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_USER_TOKEN }}
         with:
-          author: Node.js GitHub Bot <github-bot@iojs.org>
-          body: This is an automated update of ${{ matrix.id }} to ${{ env.NEW_VERSION }}.
+          token: ${{ secrets.GH_USER_TOKEN }}
           branch: actions/tools-update-${{ matrix.id }}  # Custom branch *just* for this Action.
+          delete-branch: true
           commit-message: ${{ env.COMMIT_MSG }}
           labels: ${{ matrix.label }}
           title: '${{ matrix.subsystem }}: update ${{ matrix.id }} to ${{ env.NEW_VERSION }}'
-          update-pull-request-title-and-body: true
+          body: This is an automated update of ${{ matrix.id }} to ${{ env.NEW_VERSION }}.

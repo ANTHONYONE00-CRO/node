@@ -176,13 +176,20 @@ added:
   - v20.17.0
 changes:
   - version:
-    - REPLACEME
+    - v25.4.0
+    pr-url: https://github.com/nodejs/node/pull/60959
+    description: This feature is no longer experimental.
+  - version:
+    - v23.5.0
+    - v22.13.0
+    - v20.19.0
     pr-url: https://github.com/nodejs/node/pull/56194
     description: This feature no longer emits an experimental warning by default,
                  though the warning can still be emitted by --trace-require-module.
   - version:
     - v23.0.0
     - v22.12.0
+    - v20.19.0
     pr-url: https://github.com/nodejs/node/pull/55085
     description: This feature is no longer behind the `--experimental-require-module` CLI flag.
   - version:
@@ -191,8 +198,6 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/54563
     description: Support `'module.exports'` interop export in `require(esm)`.
 -->
-
-> Stability: 1.2 - Release candidate
 
 The `.mjs` extension is reserved for [ECMAScript Modules][].
 See [Determining module system][] section for more info
@@ -207,8 +212,8 @@ regarding which files are parsed as ECMAScript modules.
   3. The file has a `.js` extension, the closest `package.json` does not contain
      `"type": "commonjs"`, and the module contains ES module syntax.
 
-If the ES Module being loaded meet the requirements, `require()` can load it and
-return the module namespace object. In this case it is similar to dynamic
+If the ES Module being loaded meets the requirements, `require()` can load it and
+return the [module namespace object][]. In this case it is similar to dynamic
 `import()` but is run synchronously and returns the name space object
 directly.
 
@@ -216,7 +221,7 @@ With the following ES Modules:
 
 ```mjs
 // distance.mjs
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 ```
 
 ```mjs
@@ -252,9 +257,8 @@ This property is experimental and can change in the future. It should only be us
 by tools converting ES modules into CommonJS modules, following existing ecosystem
 conventions. Code authored directly in CommonJS should avoid depending on it.
 
-When a ES Module contains both named exports and a default export, the result returned by `require()`
-is the module namespace object, which places the default export in the `.default` property, similar to
-the results returned by `import()`.
+The result returned by `require()` is the [module namespace object][], which places
+the default export in the `.default` property, similar to the results returned by `import()`.
 To customize what should be returned by `require(esm)` directly, the ES Module can export the
 desired value using the string name `"module.exports"`.
 
@@ -268,7 +272,7 @@ export default class Point {
 
 // `distance` is lost to CommonJS consumers of this module, unless it's
 // added to `Point` as a static property.
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 export { Point as 'module.exports' }
 ```
 
@@ -292,7 +296,7 @@ named exports attached to it as properties. For example with the example above,
 <!-- eslint-disable @stylistic/js/semi -->
 
 ```mjs
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 
 export default class Point {
   constructor(x, y) { this.x = x; this.y = y; }
@@ -322,8 +326,8 @@ If `--experimental-print-required-tla` is enabled, instead of throwing
 module, try to locate the top-level awaits, and print their location to
 help users fix them.
 
-Support for loading ES modules using `require()` is currently
-experimental and can be disabled using `--no-experimental-require-module`.
+If support for loading ES modules using `require()` results in unexpected
+breakage, it can be disabled using `--no-require-module`.
 To print where this feature is used, use [`--trace-require-module`][].
 
 This feature can be detected by checking if
@@ -345,8 +349,8 @@ require(X) from module at path Y
    a. return the core module
    b. STOP
 2. If X begins with '/'
-   a. set Y to be the file system root
-3. If X begins with './' or '/' or '../'
+   a. set Y to the file system root
+3. If X is equal to '.', or X begins with './', '/' or '../'
    a. LOAD_AS_FILE(Y + X)
    b. LOAD_AS_DIRECTORY(Y + X)
    c. THROW "not found"
@@ -372,7 +376,7 @@ LOAD_AS_FILE(X)
       1. MAYBE_DETECT_AND_LOAD(X.js)
     c. If the SCOPE/package.json contains "type" field,
       1. If the "type" field is "module", load X.js as an ECMAScript module. STOP.
-      2. If the "type" field is "commonjs", load X.js as an CommonJS module. STOP.
+      2. If the "type" field is "commonjs", load X.js as a CommonJS module. STOP.
     d. MAYBE_DETECT_AND_LOAD(X.js)
 3. If X.json is a file, load X.json to a JavaScript Object. STOP
 4. If X.node is a file, load X.node as binary addon. STOP
@@ -383,7 +387,7 @@ LOAD_INDEX(X)
     b. If no scope was found, load X/index.js as a CommonJS module. STOP.
     c. If the SCOPE/package.json contains "type" field,
       1. If the "type" field is "module", load X/index.js as an ECMAScript module. STOP.
-      2. Else, load X/index.js as an CommonJS module. STOP.
+      2. Else, load X/index.js as a CommonJS module. STOP.
 2. If X/index.json is a file, parse X/index.json to a JavaScript object. STOP
 3. If X/index.node is a file, load X/index.node as binary addon. STOP
 
@@ -412,7 +416,7 @@ NODE_MODULES_PATHS(START)
 4. while I >= 0,
    a. if PARTS[I] = "node_modules", GOTO d.
    b. DIR = path join(PARTS[0 .. I] + "node_modules")
-   c. DIRS = DIR + DIRS
+   c. DIRS = DIRS + DIR
    d. let I = I - 1
 5. return DIRS + GLOBAL_FOLDERS
 
@@ -420,7 +424,7 @@ LOAD_PACKAGE_IMPORTS(X, DIR)
 1. Find the closest package scope SCOPE to DIR.
 2. If no scope was found, return.
 3. If the SCOPE/package.json "imports" is null or undefined, return.
-4. If `--experimental-require-module` is enabled
+4. If `--no-require-module` is not enabled
   a. let CONDITIONS = ["node", "require", "module-sync"]
   b. Else, let CONDITIONS = ["node", "require"]
 5. let MATCH = PACKAGE_IMPORTS_RESOLVE(X, pathToFileURL(SCOPE),
@@ -434,7 +438,7 @@ LOAD_PACKAGE_EXPORTS(X, DIR)
    return.
 3. Parse DIR/NAME/package.json, and look for "exports" field.
 4. If "exports" is null or undefined, return.
-5. If `--experimental-require-module` is enabled
+5. If `--no-require-module` is not enabled
   a. let CONDITIONS = ["node", "require", "module-sync"]
   b. Else, let CONDITIONS = ["node", "require"]
 6. let MATCH = PACKAGE_EXPORTS_RESOLVE(pathToFileURL(DIR/NAME), "." + SUBPATH,
@@ -515,9 +519,11 @@ by that name.
 
 Some built-in modules are always preferentially loaded if their identifier is
 passed to `require()`. For instance, `require('http')` will always
-return the built-in HTTP module, even if there is a file by that name. The list
-of built-in modules that can be loaded without using the `node:` prefix is exposed
-as [`module.builtinModules`][].
+return the built-in HTTP module, even if there is a file by that name.
+
+The list of all the built-in modules can be retrieved from [`module.builtinModules`][].
+The modules being all listed without the `node:` prefix, except those that mandate such
+prefix (as explained in the next section).
 
 ### Built-in modules with mandatory `node:` prefix
 
@@ -530,6 +536,8 @@ taken the name. Currently the built-in modules that requires the `node:` prefix 
 * [`node:sqlite`][]
 * [`node:test`][]
 * [`node:test/reporters`][]
+
+The list of these modules is exposed in [`module.builtinModules`][], including the prefix.
 
 ## Cycles
 
@@ -766,9 +774,7 @@ By doing this, Node.js achieves a few things:
 added: v0.1.27
 -->
 
-<!-- type=var -->
-
-* {string}
+* Type: {string}
 
 The directory name of the current module. This is the same as the
 [`path.dirname()`][] of the [`__filename`][].
@@ -788,9 +794,7 @@ console.log(path.dirname(__filename));
 added: v0.0.1
 -->
 
-<!-- type=var -->
-
-* {string}
+* Type: {string}
 
 The file name of the current module. This is the current module file's absolute
 path with symlinks resolved.
@@ -827,9 +831,7 @@ References to `__filename` within `b.js` will return
 added: v0.1.12
 -->
 
-<!-- type=var -->
-
-* {Object}
+* Type: {Object}
 
 A reference to the `module.exports` that is shorter to type.
 See the section about the [exports shortcut][] for details on when to use
@@ -841,9 +843,7 @@ See the section about the [exports shortcut][] for details on when to use
 added: v0.1.16
 -->
 
-<!-- type=var -->
-
-* {module}
+* Type: {module}
 
 A reference to the current module, see the section about the
 [`module` object][]. In particular, `module.exports` is used for defining what
@@ -854,8 +854,6 @@ a module exports and makes available through `require()`.
 <!-- YAML
 added: v0.1.13
 -->
-
-<!-- type=var -->
 
 * `id` {string} module name or path
 * Returns: {any} exported module content
@@ -886,7 +884,7 @@ const crypto = require('node:crypto');
 added: v0.3.0
 -->
 
-* {Object}
+* Type: {Object}
 
 Modules are cached in this object when they are required. By deleting a key
 value from this object, the next `require` will reload the module.
@@ -920,7 +918,7 @@ deprecated: v0.10.6
 
 > Stability: 0 - Deprecated
 
-* {Object}
+* Type: {Object}
 
 Instruct `require` on how to handle certain file extensions.
 
@@ -944,7 +942,7 @@ extensions gets slower with each registered extension.
 added: v0.1.17
 -->
 
-* {module | undefined}
+* Type: {module | undefined}
 
 The `Module` object representing the entry script loaded when the Node.js
 process launched, or `undefined` if the entry point of the program is not a
@@ -1022,11 +1020,9 @@ Returns an array containing the paths searched during resolution of `request` or
 added: v0.1.16
 -->
 
-<!-- type=var -->
-
 <!-- name=module -->
 
-* {Object}
+* Type: {Object}
 
 In each module, the `module` free variable is a reference to the object
 representing the current module. For convenience, `module.exports` is
@@ -1039,7 +1035,7 @@ a global but rather local to each module.
 added: v0.1.16
 -->
 
-* {module\[]}
+* Type: {module\[]}
 
 The module objects required for the first time by this one.
 
@@ -1049,7 +1045,7 @@ The module objects required for the first time by this one.
 added: v0.1.16
 -->
 
-* {Object}
+* Type: {Object}
 
 The `module.exports` object is created by the `Module` system. Sometimes this is
 not acceptable; many want their module to be an instance of some class. To do
@@ -1153,7 +1149,7 @@ function require(/* ... */) {
 added: v0.1.16
 -->
 
-* {string}
+* Type: {string}
 
 The fully resolved filename of the module.
 
@@ -1163,7 +1159,7 @@ The fully resolved filename of the module.
 added: v0.1.16
 -->
 
-* {string}
+* Type: {string}
 
 The identifier for the module. Typically this is the fully resolved
 filename.
@@ -1185,7 +1181,7 @@ added:
 added: v0.1.16
 -->
 
-* {boolean}
+* Type: {boolean}
 
 Whether or not the module is done loading, or is in the process of
 loading.
@@ -1202,7 +1198,7 @@ deprecated:
 > Stability: 0 - Deprecated: Please use [`require.main`][] and
 > [`module.children`][] instead.
 
-* {module | null | undefined}
+* Type: {module | null | undefined}
 
 The module that first required this one, or `null` if the current module is the
 entry point of the current process, or `undefined` if the module was loaded by
@@ -1214,7 +1210,7 @@ something that is not a CommonJS module (E.G.: REPL or `import`).
 added: v11.14.0
 -->
 
-* {string}
+* Type: {string}
 
 The directory name of the module. This is usually the same as the
 [`path.dirname()`][] of the [`module.id`][].
@@ -1225,7 +1221,7 @@ The directory name of the module. This is usually the same as the
 added: v0.4.0
 -->
 
-* {string\[]}
+* Type: {string\[]}
 
 The search paths for the module.
 
@@ -1260,15 +1256,15 @@ This section was moved to
 ## Source map v3 support
 
 This section was moved to
-[Modules: `module` core module](module.md#source-map-v3-support).
+[Modules: `module` core module](module.md#source-map-support).
 
 <!-- Anchors to make sure old links find a target -->
 
 * <a id="modules_module_findsourcemap_path_error" href="module.html#modulefindsourcemappath">`module.findSourceMap(path)`</a>
 * <a id="modules_class_module_sourcemap" href="module.html#class-modulesourcemap">Class: `module.SourceMap`</a>
-  * <a id="modules_new_sourcemap_payload" href="module.html#new-sourcemappayload">`new SourceMap(payload)`</a>
+  * <a id="modules_new_sourcemap_payload" href="module.html#new-sourcemappayload--linelengths-">`new SourceMap(payload)`</a>
   * <a id="modules_sourcemap_payload" href="module.html#sourcemappayload">`sourceMap.payload`</a>
-  * <a id="modules_sourcemap_findentry_linenumber_columnnumber" href="module.html#sourcemapfindentrylinenumber-columnnumber">`sourceMap.findEntry(lineNumber, columnNumber)`</a>
+  * <a id="modules_sourcemap_findentry_linenumber_columnnumber" href="module.html#sourcemapfindentrylineoffset-columnoffset">`sourceMap.findEntry(lineNumber, columnNumber)`</a>
 
 [Determining module system]: packages.md#determining-module-system
 [ECMAScript Modules]: esm.md
@@ -1296,6 +1292,7 @@ This section was moved to
 [`process.features.require_module`]: process.md#processfeaturesrequire_module
 [`require.main`]: #requiremain
 [exports shortcut]: #exports-shortcut
+[module namespace object]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import#module_namespace_object
 [module resolution]: #all-together
 [native addons]: addons.md
 [subpath exports]: packages.md#subpath-exports

@@ -24,6 +24,8 @@ const {
   generateKeyPairSync,
 } = require('crypto');
 
+const { hasOpenSSL3 } = require('../common/crypto');
+
 const fixtures = require('../common/fixtures');
 
 const publicPem = fixtures.readKey('rsa_public.pem', 'ascii');
@@ -241,14 +243,14 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
   assert(Buffer.isBuffer(privateDER));
 
   const plaintext = Buffer.from('Hello world', 'utf8');
-  const testDecryption = (fn, ciphertexts, decryptionKeys) => {
+  const testDecryption = common.mustCall((fn, ciphertexts, decryptionKeys) => {
     for (const ciphertext of ciphertexts) {
       for (const key of decryptionKeys) {
         const deciphered = fn(key, ciphertext);
         assert.deepStrictEqual(deciphered, plaintext);
       }
     }
-  };
+  }, 2);
 
   testDecryption(privateDecrypt, [
     // Encrypt using the public key.
@@ -297,7 +299,7 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
   // This should not cause a crash: https://github.com/nodejs/node/issues/25247
   assert.throws(() => {
     createPrivateKey({ key: '' });
-  }, common.hasOpenSSL3 ? {
+  }, hasOpenSSL3 ? {
     message: 'error:1E08010C:DECODER routines::unsupported',
   } : {
     message: 'error:0909006C:PEM routines:get_name:no start line',
@@ -323,7 +325,7 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
       type: 'pkcs1'
     });
     createPrivateKey({ key, format: 'der', type: 'pkcs1' });
-  }, common.hasOpenSSL3 ? {
+  }, hasOpenSSL3 ? {
     message: /error:1E08010C:DECODER routines::unsupported/,
     library: 'DECODER routines'
   } : {
@@ -510,7 +512,7 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
 
 {
   // Reading an encrypted key without a passphrase should fail.
-  assert.throws(() => createPrivateKey(privateDsa), common.hasOpenSSL3 ? {
+  assert.throws(() => createPrivateKey(privateDsa), hasOpenSSL3 ? {
     name: 'Error',
     message: 'error:07880109:common libcrypto routines::interrupted or ' +
              'cancelled',
@@ -526,7 +528,7 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
     key: privateDsa,
     format: 'pem',
     passphrase: Buffer.alloc(1025, 'a')
-  }), common.hasOpenSSL3 ? { name: 'Error' } : {
+  }), hasOpenSSL3 ? { name: 'Error' } : {
     code: 'ERR_OSSL_PEM_BAD_PASSWORD_READ',
     name: 'Error'
   });

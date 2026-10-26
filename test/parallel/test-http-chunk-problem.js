@@ -1,9 +1,12 @@
 'use strict';
 // http://groups.google.com/group/nodejs/browse_thread/thread/f66cd3c960406919
 const common = require('../common');
-if (!common.hasCrypto)
-  common.skip('missing crypto');
 
+if (!common.hasCrypto) {
+  common.skip('missing crypto');
+}
+
+const fs = require('fs');
 const assert = require('assert');
 
 if (process.argv[2] === 'request') {
@@ -58,7 +61,7 @@ function executeRequest(cb) {
            file,
            'shasum' ].join(' '),
           { env },
-          (err, stdout, stderr) => {
+          common.mustCall((err, stdout, stderr) => {
             if (stderr.trim() !== '') {
               console.log(stderr);
             }
@@ -66,14 +69,18 @@ function executeRequest(cb) {
             assert.strictEqual(stdout.slice(0, 40),
                                '8c206a1a87599f532ce68675536f0b1546900d7a');
             cb();
-          }
+          })
   );
 }
 
 
 tmpdir.refresh();
 
-common.createZeroFilledFile(filename);
+
+// Create a zero-filled file.
+const fd = fs.openSync(filename, 'w');
+fs.ftruncateSync(fd, 10 * 1024 * 1024);
+fs.closeSync(fd);
 
 server = http.createServer(function(req, res) {
   res.writeHead(200);

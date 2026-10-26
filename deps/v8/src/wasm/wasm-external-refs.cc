@@ -10,9 +10,13 @@
 
 #include "src/base/bits.h"
 #include "src/base/ieee754.h"
-#include "src/base/safe_conversions.h"
+#include "src/base/numerics/safe_conversions.h"
 #include "src/common/assert-scope.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/frames.h"
+#include "src/execution/pointer-authentication.h"
 #include "src/numbers/conversions.h"
+#include "src/numbers/ieee754.h"
 #include "src/roots/roots-inl.h"
 #include "src/utils/memcopy.h"
 #include "src/wasm/float16.h"
@@ -360,7 +364,7 @@ uint64_t word64_ror_wrapper(uint64_t input, uint32_t shift) {
 void float64_pow_wrapper(Address data) {
   double x = ReadUnalignedValue<double>(data);
   double y = ReadUnalignedValue<double>(data + sizeof(x));
-  WriteUnalignedValue<double>(data, base::ieee754::pow(x, y));
+  WriteUnalignedValue<double>(data, math::pow(x, y));
 }
 
 template <typename T, T (*float_round_op)(T)>
@@ -701,41 +705,6 @@ void f16x8_qfms_wrapper(Address data) {
 }
 
 namespace {
-class V8_NODISCARD ThreadNotInWasmScope {
-// Asan on Windows triggers exceptions to allocate shadow memory lazily. When
-// this function is called from WebAssembly, these exceptions would be handled
-// by the trap handler before they get handled by Asan, and thereby confuse the
-// thread-in-wasm flag. Therefore we disable ASAN for this function.
-// Alternatively we could reset the thread-in-wasm flag before calling this
-// function. However, as this is only a problem with Asan on Windows, we did not
-// consider it worth the overhead.
-#if defined(RESET_THREAD_IN_WASM_FLAG_FOR_ASAN_ON_WINDOWS)
-
- public:
-  ThreadNotInWasmScope() : thread_was_in_wasm_(trap_handler::IsThreadInWasm()) {
-    if (thread_was_in_wasm_) {
-      trap_handler::ClearThreadInWasm();
-    }
-  }
-
-  ~ThreadNotInWasmScope() {
-    if (thread_was_in_wasm_) {
-      trap_handler::SetThreadInWasm();
-    }
-  }
-
- private:
-  bool thread_was_in_wasm_;
-#else
-
- public:
-  ThreadNotInWasmScope() {
-    // This is needed to avoid compilation errors (unused variable).
-    USE(this);
-  }
-#endif
-};
-
 inline uint8_t* EffectiveAddress(Tagged<WasmTrustedInstanceData> trusted_data,
                                  uint32_t mem_index, uintptr_t index) {
   return trusted_data->memory_base(mem_index) + index;
@@ -755,10 +724,9 @@ constexpr int32_t kOutOfBounds = 0;
 int32_t memory_init_wrapper(Address trusted_data_addr, uint32_t mem_index,
                             uintptr_t dst, uint32_t src, uint32_t seg_index,
                             uint32_t size) {
-  ThreadNotInWasmScope thread_not_in_wasm_scope;
   DisallowGarbageCollection no_gc;
   Tagged<WasmTrustedInstanceData> trusted_data =
-      Cast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
+      TrustedCast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
 
   uint64_t mem_size = trusted_data->memory_size(mem_index);
   if (!base::IsInBounds<uint64_t>(dst, size, mem_size)) return kOutOfBounds;
@@ -776,10 +744,9 @@ int32_t memory_init_wrapper(Address trusted_data_addr, uint32_t mem_index,
 int32_t memory_copy_wrapper(Address trusted_data_addr, uint32_t dst_mem_index,
                             uint32_t src_mem_index, uintptr_t dst,
                             uintptr_t src, uintptr_t size) {
-  ThreadNotInWasmScope thread_not_in_wasm_scope;
   DisallowGarbageCollection no_gc;
   Tagged<WasmTrustedInstanceData> trusted_data =
-      Cast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
+      TrustedCast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
 
   size_t dst_mem_size = trusted_data->memory_size(dst_mem_index);
   size_t src_mem_size = trusted_data->memory_size(src_mem_index);
@@ -795,11 +762,10 @@ int32_t memory_copy_wrapper(Address trusted_data_addr, uint32_t dst_mem_index,
 
 int32_t memory_fill_wrapper(Address trusted_data_addr, uint32_t mem_index,
                             uintptr_t dst, uint8_t value, uintptr_t size) {
-  ThreadNotInWasmScope thread_not_in_wasm_scope;
   DisallowGarbageCollection no_gc;
 
   Tagged<WasmTrustedInstanceData> trusted_data =
-      Cast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
+      TrustedCast<WasmTrustedInstanceData>(Tagged<Object>{trusted_data_addr});
 
   uint64_t mem_size = trusted_data->memory_size(mem_index);
   if (!base::IsInBounds<uint64_t>(dst, size, mem_size)) return kOutOfBounds;
@@ -824,7 +790,6 @@ void array_copy_wrapper(Address raw_dst_array, uint32_t dst_index,
                         Address raw_src_array, uint32_t src_index,
                         uint32_t length) {
   DCHECK_GT(length, 0);
-  ThreadNotInWasmScope thread_not_in_wasm_scope;
   DisallowGarbageCollection no_gc;
   Tagged<WasmArray> dst_array = Cast<WasmArray>(Tagged<Object>(raw_dst_array));
   Tagged<WasmArray> src_array = Cast<WasmArray>(Tagged<Object>(raw_src_array));
@@ -833,11 +798,12 @@ void array_copy_wrapper(Address raw_dst_array, uint32_t dst_index,
       dst_array.ptr() == src_array.ptr() &&
       (dst_index < src_index ? dst_index + length > src_index
                              : src_index + length > dst_index);
-  wasm::ValueType element_type = src_array->type()->element_type();
+  wasm::CanonicalValueType element_type =
+      src_array->map()->wasm_type_info()->element_type();
   if (element_type.is_reference()) {
     ObjectSlot dst_slot = dst_array->ElementSlot(dst_index);
     ObjectSlot src_slot = src_array->ElementSlot(src_index);
-    Heap* heap = dst_array->GetIsolate()->heap();
+    Heap* heap = Isolate::Current()->heap();
     if (overlapping_ranges) {
       heap->MoveRange(dst_array, dst_slot, src_slot, length,
                       UPDATE_WRITE_BARRIER);
@@ -861,29 +827,27 @@ void array_copy_wrapper(Address raw_dst_array, uint32_t dst_index,
 void array_fill_wrapper(Address raw_array, uint32_t index, uint32_t length,
                         uint32_t emit_write_barrier, uint32_t raw_type,
                         Address initial_value_addr) {
-  ThreadNotInWasmScope thread_not_in_wasm_scope;
   DisallowGarbageCollection no_gc;
   ValueType type = ValueType::FromRawBitField(raw_type);
   int8_t* initial_element_address = reinterpret_cast<int8_t*>(
       ArrayElementAddress(raw_array, index, type.value_kind_size()));
-  // Stack pointers are only aligned to 4 bytes.
-  int64_t initial_value = base::ReadUnalignedValue<int64_t>(initial_value_addr);
   const int bytes_to_set = length * type.value_kind_size();
-
-  // If the initial value is zero, we memset the array.
-  if (type.is_numeric() && initial_value == 0) {
-    std::memset(initial_element_address, 0, bytes_to_set);
-    return;
-  }
 
   // We implement the general case by setting the first 8 bytes manually, then
   // filling the rest by exponentially growing {memcpy}s.
 
-  DCHECK_GE(static_cast<size_t>(bytes_to_set), sizeof(int64_t));
+  CHECK_GE(static_cast<size_t>(bytes_to_set), sizeof(int64_t));
 
   switch (type.kind()) {
     case kI64:
     case kF64: {
+      // Stack pointers are only aligned to 4 bytes.
+      int64_t initial_value =
+          base::ReadUnalignedValue<int64_t>(initial_value_addr);
+      if (initial_value == 0) {
+        std::memset(initial_element_address, 0, bytes_to_set);
+        return;
+      }
       // Array elements are only aligned to 4 bytes, therefore
       // `initial_element_address` may be misaligned as a 64-bit pointer.
       base::WriteUnalignedValue<int64_t>(
@@ -892,38 +856,61 @@ void array_fill_wrapper(Address raw_array, uint32_t index, uint32_t length,
     }
     case kI32:
     case kF32: {
+      int32_t initial_value = *reinterpret_cast<int32_t*>(initial_value_addr);
+      if (initial_value == 0) {
+        std::memset(initial_element_address, 0, bytes_to_set);
+        return;
+      }
       int32_t* base = reinterpret_cast<int32_t*>(initial_element_address);
-      base[0] = base[1] = static_cast<int32_t>(initial_value);
+      base[0] = base[1] = initial_value;
       break;
     }
     case kF16:
     case kI16: {
+      // The array.fill input is an i32!
+      int16_t initial_value = *reinterpret_cast<int32_t*>(initial_value_addr);
+      if (initial_value == 0) {
+        std::memset(initial_element_address, 0, bytes_to_set);
+        return;
+      }
       int16_t* base = reinterpret_cast<int16_t*>(initial_element_address);
-      base[0] = base[1] = base[2] = base[3] =
-          static_cast<int16_t>(initial_value);
+      base[0] = base[1] = base[2] = base[3] = initial_value;
       break;
     }
     case kI8: {
+      // The array.fill input is an i32!
+      int8_t initial_value = *reinterpret_cast<int32_t*>(initial_value_addr);
+      if (initial_value == 0) {
+        std::memset(initial_element_address, 0, bytes_to_set);
+        return;
+      }
       int8_t* base = reinterpret_cast<int8_t*>(initial_element_address);
       for (size_t i = 0; i < sizeof(int64_t); i++) {
-        base[i] = static_cast<int8_t>(initial_value);
+        base[i] = initial_value;
       }
       break;
     }
     case kRefNull:
-    case kRef:
+    case kRef: {
+      intptr_t uncompressed_pointer =
+          base::ReadUnalignedValue<intptr_t>(initial_value_addr);
       if constexpr (kTaggedSize == 4) {
         int32_t* base = reinterpret_cast<int32_t*>(initial_element_address);
-        base[0] = base[1] = static_cast<int32_t>(initial_value);
+        base[0] = base[1] = static_cast<int32_t>(uncompressed_pointer);
       } else {
-        // We use WriteUnalignedValue; see above.
         base::WriteUnalignedValue(
-            reinterpret_cast<Address>(initial_element_address), initial_value);
+            reinterpret_cast<Address>(initial_element_address),
+            uncompressed_pointer);
       }
       break;
+    }
     case kS128:
-    case kRtt:
+      // S128 can only be filled with zeros.
+      DCHECK_EQ(base::ReadUnalignedValue<int64_t>(initial_value_addr), 0);
+      std::memset(initial_element_address, 0, bytes_to_set);
+      return;
     case kVoid:
+    case kTop:
     case kBottom:
       UNREACHABLE();
   }
@@ -944,11 +931,11 @@ void array_fill_wrapper(Address raw_array, uint32_t index, uint32_t length,
   if (emit_write_barrier) {
     DCHECK(type.is_reference());
     Tagged<WasmArray> array = Cast<WasmArray>(Tagged<Object>(raw_array));
-    Isolate* isolate = array->GetIsolate();
+    Isolate* isolate = Isolate::Current();
     ObjectSlot start(reinterpret_cast<Address>(initial_element_address));
     ObjectSlot end(
         reinterpret_cast<Address>(initial_element_address + bytes_to_set));
-    isolate->heap()->WriteBarrierForRange(array, start, end);
+    WriteBarrier::ForRange(isolate->heap(), array, start, end);
   }
 }
 
@@ -958,21 +945,140 @@ double flat_string_to_f64(Address string_address) {
                             std::numeric_limits<double>::quiet_NaN());
 }
 
-void sync_stack_limit(Isolate* isolate) {
-  DisallowGarbageCollection no_gc;
-
-  isolate->SyncStackLimit();
+void start_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                 Address fp, Address pc) {
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (start)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Inactive, JumpBuffer::Suspended>(
+      from, to, sp, fp, pc);
 }
 
-void return_switch(Isolate* isolate, Address raw_continuation) {
-  DisallowGarbageCollection no_gc;
+// The active stack is checked inline in the wasm-to-js wrapper. This only
+// checks the inactive stacks.
+int32_t suspender_has_js_frames(Isolate* isolate) {
+  wasm::StackMemory* from_stack = isolate->isolate_data()->active_stack();
+  Tagged<WasmSuspenderObject> suspender =
+      isolate->isolate_data()->active_suspender();
+  Tagged<WasmSuspenderObject> parent = suspender->parent();
+  wasm::StackMemory* to_stack = parent->stack();
+  for (wasm::StackMemory* stack = from_stack; stack != to_stack;
+       stack = stack->jmpbuf()->parent) {
+    if (stack->jmpbuf()->is_on_central_stack) {
+      return true;
+    }
+  }
+  return false;
+}
 
-  Tagged<WasmContinuationObject> continuation =
-      Cast<WasmContinuationObject>(Tagged<Object>{raw_continuation});
-  wasm::StackMemory* stack =
-      reinterpret_cast<StackMemory*>(continuation->stack());
-  isolate->RetireWasmStack(stack);
-  isolate->SyncStackLimit();
+void suspend_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                   Address fp, Address pc) {
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  auto suspender = isolate->isolate_data()->active_suspender();
+  suspender->set_stack(isolate, from);
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (suspend)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Suspended, JumpBuffer::Inactive>(
+      from, to, sp, fp, pc);
+}
+
+void resume_jspi_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                       Address fp, Address pc, Address suspender_raw) {
+  Tagged<Object> suspender_obj(suspender_raw);
+  auto suspender = TrustedCast<WasmSuspenderObject>(suspender_obj);
+  Tagged<WasmSuspenderObject> active_suspender =
+      isolate->isolate_data()->active_suspender();
+  suspender->set_parent(active_suspender);
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (resume)\n", from->id(), to->id());
+  }
+  isolate->isolate_data()->set_active_suspender(suspender);
+  isolate->SwitchStacks<JumpBuffer::Inactive, JumpBuffer::Suspended>(
+      from, to, sp, fp, pc);
+}
+
+void resume_wasmfx_stack(Isolate* isolate, wasm::StackMemory* to, Address sp,
+                         Address fp, Address pc) {
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  to->set_current_continuation({});
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (resume)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Inactive, JumpBuffer::Suspended>(
+      from, to, sp, fp, pc);
+}
+
+Address suspend_wasmfx_stack(Isolate* isolate, Address sp, Address fp,
+                             Address pc, Address wanted_tag_raw,
+                             Address cont_raw) {
+  Tagged<Object> tag_obj(wanted_tag_raw);
+  auto wanted_tag = TrustedCast<WasmExceptionTag>(tag_obj);
+  Tagged<Object> cont_obj(cont_raw);
+  auto cont = TrustedCast<WasmContinuationObject>(cont_obj);
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  cont->set_stack(isolate, from);
+  from->set_current_continuation(cont);
+  wasm::StackMemory* to = from->jmpbuf()->parent;
+  bool found = false;
+  // Search the innermost effect handler with a matching tag.
+  // Unlike exception handling, we don't need to look at each frame. Only the
+  // top frame of each stack can have an effect handler.
+  while (true) {
+    StackFrameIterator it(isolate, to);
+    CHECK_EQ(it.frame()->type(), StackFrame::WASM_STACK_EXIT);
+    it.Advance();
+    CHECK(it.frame()->is_wasm());
+    WasmCode* wasm_code =
+        wasm::GetWasmCodeManager()->LookupCode(isolate, it.frame()->pc());
+    base::Vector<const WasmCode::EffectHandler> effect_handlers =
+        wasm_code->effect_handlers();
+    Tagged<Object> trusted_instance_data_obj(base::Memory<Address>(
+        it.frame()->fp() + WasmFrameConstants::kWasmInstanceDataOffset));
+    auto trusted_instance_data =
+        TrustedCast<WasmTrustedInstanceData>(trusted_instance_data_obj);
+    for (const auto& handler : effect_handlers) {
+      auto tag = trusted_instance_data->tags_table()->get(handler.tag_index);
+      if (wasm_code->instruction_start() + handler.call_offset ==
+              it.frame()->pc() &&
+          tag == wanted_tag) {
+        found = true;
+        to->jmpbuf()->pc =
+            wasm_code->instruction_start() + handler.handler_offset;
+        to->jmpbuf()->sp = it.frame()->sp();
+        to->jmpbuf()->fp = it.frame()->fp();
+        break;
+      }
+    }
+    if (found) break;
+    if (to->jmpbuf()->is_on_central_stack) {
+      // We are about to skip JS/C++ frames.
+      return kNullAddress;
+    }
+    to = to->jmpbuf()->parent;
+  }
+  if (!found) {
+    return kNullAddress;
+  }
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (suspend)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Suspended, JumpBuffer::Inactive>(
+      from, to, sp, fp, pc);
+  return reinterpret_cast<Address>(to);
+}
+
+void return_stack(Isolate* isolate, wasm::StackMemory* to) {
+  // The active stack was already updated by the builtin.
+  wasm::StackMemory* from = isolate->isolate_data()->active_stack();
+  if (v8_flags.trace_wasm_stack_switching) {
+    PrintF("Switch from stack %d to %d (return)\n", from->id(), to->id());
+  }
+  isolate->SwitchStacks<JumpBuffer::Retired, JumpBuffer::Inactive>(
+      from, to, kNullAddress, kNullAddress, kNullAddress);
+  isolate->RetireWasmStack(from);
 }
 
 intptr_t switch_to_the_central_stack(Isolate* isolate, uintptr_t current_sp) {
@@ -991,6 +1097,7 @@ intptr_t switch_to_the_central_stack(Isolate* isolate, uintptr_t current_sp) {
   auto counter = isolate->wasm_switch_to_the_central_stack_counter();
   isolate->set_wasm_switch_to_the_central_stack_counter(counter + 1);
 
+  DCHECK_NE(thread_local_top->central_stack_sp_, kNullAddress);
   return thread_local_top->central_stack_sp_;
 }
 
@@ -1008,34 +1115,98 @@ void switch_from_the_central_stack(Isolate* isolate) {
   stack_guard->SetStackLimitForStackSwitching(secondary_stack_limit);
 }
 
-intptr_t switch_to_the_central_stack_for_js(Isolate* isolate,
-                                            uintptr_t* stack_limit_slot) {
-  // Set the suspender's {has_js_frames} field. The suspender contains JS
-  // frames iff it is currently on the central stack.
-  // The wasm-to-js wrapper checks this field when calling a suspending import
-  // and traps if the stack contains JS frames.
-  auto active_suspender =
-      Cast<WasmSuspenderObject>(isolate->root(RootIndex::kActiveSuspender));
-  active_suspender->set_has_js_frames(1);
+intptr_t switch_to_the_central_stack_for_js(Isolate* isolate, Address fp) {
   ThreadLocalTop* thread_local_top = isolate->thread_local_top();
   StackGuard* stack_guard = isolate->stack_guard();
-  *stack_limit_slot = stack_guard->real_jslimit();
+  wasm::StackMemory* stack = isolate->isolate_data()->active_stack();
+  Address central_stack_sp = thread_local_top->central_stack_sp_;
+  DCHECK_NE(central_stack_sp, kNullAddress);
+  stack->set_stack_switch_info(fp, central_stack_sp);
   stack_guard->SetStackLimitForStackSwitching(
       thread_local_top->central_stack_limit_);
   thread_local_top->is_on_central_stack_flag_ = true;
-  return thread_local_top->central_stack_sp_;
+  return central_stack_sp;
 }
 
-void switch_from_the_central_stack_for_js(Isolate* isolate,
-                                          uintptr_t stack_limit) {
+void switch_from_the_central_stack_for_js(Isolate* isolate) {
   // The stack only contains wasm frames after this JS call.
-  auto active_suspender =
-      Cast<WasmSuspenderObject>(isolate->root(RootIndex::kActiveSuspender));
-  active_suspender->set_has_js_frames(0);
+  wasm::StackMemory* stack = isolate->isolate_data()->active_stack();
+  stack->clear_stack_switch_info();
   ThreadLocalTop* thread_local_top = isolate->thread_local_top();
   thread_local_top->is_on_central_stack_flag_ = false;
   StackGuard* stack_guard = isolate->stack_guard();
-  stack_guard->SetStackLimitForStackSwitching(stack_limit);
+  stack_guard->SetStackLimitForStackSwitching(
+      reinterpret_cast<uintptr_t>(stack->jslimit()));
+}
+
+// frame_size includes param slots area and extra frame slots above FP.
+Address grow_stack(Isolate* isolate, void* current_sp, size_t frame_size,
+                   size_t gap, Address current_fp) {
+  // Check if this is a real stack overflow.
+  StackLimitCheck check(isolate);
+  if (check.WasmHasOverflowed(gap)) {
+    wasm::StackMemory* active_stack = isolate->isolate_data()->active_stack();
+    if (isolate->IsOnCentralStack()) {
+      // Should not grow the central stack.
+      return 0;
+    }
+    DCHECK(active_stack->IsActive());
+    // Grow by at least the new frame size plus the stack limit margin.
+    size_t min =
+        gap + frame_size + StackMemory::JSGrowableStackLimitMarginKB() * KB;
+    if (!active_stack->Grow(current_fp, min)) {
+      return 0;
+    }
+
+    Address new_sp = active_stack->base() - frame_size;
+    // Here we assume stack values don't refer other moved stack slots.
+    // A stack grow event happens right in the beginning of the function
+    // call so moved slots contain only incoming params and frame header.
+    // So, it is reasonable to assume no self references.
+    std::memcpy(reinterpret_cast<void*>(new_sp), current_sp, frame_size);
+
+#if V8_TARGET_ARCH_ARM64
+    Address new_fp =
+        new_sp + (current_fp - reinterpret_cast<Address>(current_sp));
+    Address old_pc_address = current_fp + CommonFrameConstants::kCallerPCOffset;
+    Address new_pc_address = new_fp + CommonFrameConstants::kCallerPCOffset;
+    Address old_signed_pc = base::Memory<Address>(old_pc_address);
+    Address new_signed_pc = PointerAuthentication::MoveSignedPC(
+        isolate, old_signed_pc, new_pc_address + kSystemPointerSize,
+        old_pc_address + kSystemPointerSize);
+    WriteUnalignedValue<Address>(new_pc_address, new_signed_pc);
+#endif
+
+    isolate->stack_guard()->SetStackLimitForStackSwitching(
+        reinterpret_cast<uintptr_t>(active_stack->jslimit()));
+    return new_sp;
+  }
+
+  return 0;
+}
+
+Address shrink_stack(Isolate* isolate) {
+  // If there is no parent, then the current stack is the main isolate stack.
+  wasm::StackMemory* active_stack = isolate->isolate_data()->active_stack();
+  if (active_stack->jmpbuf()->parent == nullptr) {
+    return 0;
+  }
+  DCHECK(active_stack->IsActive());
+  Address old_fp = active_stack->Shrink();
+
+  isolate->stack_guard()->SetStackLimitForStackSwitching(
+      reinterpret_cast<uintptr_t>(active_stack->jslimit()));
+  return old_fp;
+}
+
+Address load_old_fp(Isolate* isolate) {
+  // If there is no parent, then the current stack is the main isolate stack.
+  wasm::StackMemory* active_stack = isolate->isolate_data()->active_stack();
+  if (active_stack->jmpbuf()->parent == nullptr) {
+    return 0;
+  }
+  DCHECK_EQ(active_stack->jmpbuf()->state, wasm::JumpBuffer::Active);
+  return active_stack->old_fp();
 }
 
 }  // namespace v8::internal::wasm

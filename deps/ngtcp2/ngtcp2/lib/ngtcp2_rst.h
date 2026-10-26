@@ -48,7 +48,6 @@ typedef struct ngtcp2_rs {
   ngtcp2_tstamp prior_ts;
   uint64_t tx_in_flight;
   uint64_t lost;
-  uint64_t prior_lost;
   ngtcp2_duration send_elapsed;
   ngtcp2_duration ack_elapsed;
   int64_t last_end_seq;
@@ -77,6 +76,10 @@ typedef struct ngtcp2_rst {
 } ngtcp2_rst;
 
 void ngtcp2_rst_init(ngtcp2_rst *rst);
+
+void ngtcp2_rst_reset(ngtcp2_rst *rst);
+
+void ngtcp2_rst_reset_rate_sample(ngtcp2_rst *rst, ngtcp2_conn_stat *cstat);
 
 void ngtcp2_rst_on_pkt_sent(ngtcp2_rst *rst, ngtcp2_rtb_entry *ent,
                             const ngtcp2_conn_stat *cstat);

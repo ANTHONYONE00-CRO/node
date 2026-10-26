@@ -1,8 +1,7 @@
-const fetch = require('npm-registry-fetch')
+const npmFetch = require('npm-registry-fetch')
 const localeCompare = require('@isaacs/string-locale-compare')('en')
 const npa = require('npm-package-arg')
 const pacote = require('pacote')
-const pMap = require('p-map')
 const tufClient = require('@sigstore/tuf')
 const { log, output } = require('proc-log')
 
@@ -26,6 +25,7 @@ class VerifySignatures {
 
   async run () {
     const start = process.hrtime.bigint()
+    const { default: pMap } = await import('p-map')
 
     // Find all deps in tree
     const { edges, registries } = this.getEdgesOut(this.tree.inventory.values(), this.filterSet)
@@ -43,9 +43,8 @@ class VerifySignatures {
     log.verbose('verifying registry signatures')
     await pMap(edges, (e) => this.getVerifiedInfo(e), { concurrency: 20, stopOnError: true })
 
-    // Didn't find any dependencies that could be verified, e.g. only local
-    // deps, missing version, not on a registry etc.
-    if (!this.auditedWithKeysCount) {
+    // Didn't find any dependencies that could be verified, e.g. only local deps, missing version, not on a registry etc.
+    if (!this.auditedWithKeysCount && !this.verifiedAttestationCount) {
       throw new Error('found no dependencies to audit that were installed from ' +
                       'a supported registry')
     }
@@ -70,41 +69,35 @@ class VerifySignatures {
     const timing = `audited ${this.auditedWithKeysCount} package${auditedPlural} in ` +
       `${Math.floor(Number(elapsed) / 1e9)}s`
     output.standard(timing)
-    output.standard('')
+    output.standard()
 
     const verifiedBold = this.npm.chalk.bold('verified')
     if (this.verifiedSignatureCount) {
       if (this.verifiedSignatureCount === 1) {
-        /* eslint-disable-next-line max-len */
         output.standard(`${this.verifiedSignatureCount} package has a ${verifiedBold} registry signature`)
       } else {
-        /* eslint-disable-next-line max-len */
         output.standard(`${this.verifiedSignatureCount} packages have ${verifiedBold} registry signatures`)
       }
-      output.standard('')
+      output.standard()
     }
 
     if (this.verifiedAttestationCount) {
       if (this.verifiedAttestationCount === 1) {
-        /* eslint-disable-next-line max-len */
         output.standard(`${this.verifiedAttestationCount} package has a ${verifiedBold} attestation`)
       } else {
-        /* eslint-disable-next-line max-len */
         output.standard(`${this.verifiedAttestationCount} packages have ${verifiedBold} attestations`)
       }
-      output.standard('')
+      output.standard()
     }
 
     if (missing.length) {
       const missingClr = this.npm.chalk.redBright('missing')
       if (missing.length === 1) {
-        /* eslint-disable-next-line max-len */
         output.standard(`1 package has a ${missingClr} registry signature but the registry is providing signing keys:`)
       } else {
-        /* eslint-disable-next-line max-len */
         output.standard(`${missing.length} packages have ${missingClr} registry signatures but the registry is providing signing keys:`)
       }
-      output.standard('')
+      output.standard()
       missing.map(m =>
         output.standard(`${this.npm.chalk.red(`${m.name}@${m.version}`)} (${m.registry})`)
       )
@@ -112,7 +105,7 @@ class VerifySignatures {
 
     if (invalid.length) {
       if (missing.length) {
-        output.standard('')
+        output.standard()
       }
       const invalidClr = this.npm.chalk.redBright('invalid')
       // We can have either invalid signatures or invalid provenance
@@ -121,14 +114,13 @@ class VerifySignatures {
         if (invalidSignatures.length === 1) {
           output.standard(`1 package has an ${invalidClr} registry signature:`)
         } else {
-          /* eslint-disable-next-line max-len */
           output.standard(`${invalidSignatures.length} packages have ${invalidClr} registry signatures:`)
         }
-        output.standard('')
+        output.standard()
         invalidSignatures.map(i =>
           output.standard(`${this.npm.chalk.red(`${i.name}@${i.version}`)} (${i.registry})`)
         )
-        output.standard('')
+        output.standard()
       }
 
       const invalidAttestations = this.invalid.filter(i => i.code === 'EATTESTATIONVERIFY')
@@ -136,24 +128,21 @@ class VerifySignatures {
         if (invalidAttestations.length === 1) {
           output.standard(`1 package has an ${invalidClr} attestation:`)
         } else {
-          /* eslint-disable-next-line max-len */
           output.standard(`${invalidAttestations.length} packages have ${invalidClr} attestations:`)
         }
-        output.standard('')
+        output.standard()
         invalidAttestations.map(i =>
           output.standard(`${this.npm.chalk.red(`${i.name}@${i.version}`)} (${i.registry})`)
         )
-        output.standard('')
+        output.standard()
       }
 
       if (invalid.length === 1) {
-        /* eslint-disable-next-line max-len */
         output.standard(`Someone might have tampered with this package since it was published on the registry!`)
       } else {
-        /* eslint-disable-next-line max-len */
         output.standard(`Someone might have tampered with these packages since they were published on the registry!`)
       }
-      output.standard('')
+      output.standard()
     }
   }
 
@@ -200,9 +189,10 @@ class VerifySignatures {
         }
       })
 
-    // If keys not found in Sigstore TUF repo, fallback to registry keys API
+    // If keys not found in Sigstore TUF repo, fall back to registry keys API
     if (!keys) {
-      keys = await fetch.json('/-/npm/v1/keys', {
+      log.warn(`Fetching verification keys using TUF failed.  Fetching directly from ${registry}.`)
+      keys = await npmFetch.json('/-/npm/v1/keys', {
         ...this.npm.flatOptions,
         registry,
       }).then(({ keys: ks }) => ks.map((key) => ({
@@ -253,7 +243,7 @@ class VerifySignatures {
   }
 
   getSpecRegistry (spec) {
-    return fetch.pickRegistry(spec, this.npm.flatOptions)
+    return npmFetch.pickRegistry(spec, this.npm.flatOptions)
   }
 
   getValidPackageInfo (edge) {
@@ -273,7 +263,7 @@ class VerifySignatures {
     const { version } = node.package || {}
 
     if (node.isWorkspace || // Skip local workspaces packages
-        !version || // Skip packages that don't have a installed version, e.g. optonal dependencies
+        !version || // Skip packages that don't have an installed version, e.g. optional dependencies
         !spec.registry) { // Skip if not from registry, e.g. git package
       return
     }
@@ -327,8 +317,7 @@ class VerifySignatures {
     }
     this.checkedPackages.add(location)
 
-    // We only "audit" or verify the signature, or the presence of it, on
-    // packages whose registry returns signing keys
+    // We only "audit" or verify the signature, or the presence of it, on packages whose registry returns signing keys
     const keys = this.keys.get(registry) || []
     if (keys.length) {
       this.auditedWithKeysCount += 1
@@ -354,9 +343,7 @@ class VerifySignatures {
         })
       }
 
-      // Track verified attestations separately to registry signatures, as all
-      // packages on registries with signing keys are expected to have registry
-      // signatures, but not all packages have provenance and publish attestations.
+      // Track verified attestations separately to registry signatures, as all packages on registries with signing keys are expected to have registry signatures, but not all packages have provenance and publish attestations.
       if (attestations) {
         this.verifiedAttestationCount += 1
       }

@@ -53,10 +53,12 @@ MaybeLocal<Object> PipeWrap::Instantiate(Environment* env,
   EscapableHandleScope handle_scope(env->isolate());
   AsyncHooks::DefaultTriggerAsyncIdScope trigger_scope(parent);
   CHECK_EQ(false, env->pipe_constructor_template().IsEmpty());
-  Local<Function> constructor = env->pipe_constructor_template()
-                                    ->GetFunction(env->context())
-                                    .ToLocalChecked();
-  CHECK_EQ(false, constructor.IsEmpty());
+  Local<Function> constructor;
+  if (!env->pipe_constructor_template()
+           ->GetFunction(env->context())
+           .ToLocal(&constructor)) {
+    return {};
+  }
   Local<Value> type_value = Int32::New(env->isolate(), type);
   return handle_scope.EscapeMaybe(
       constructor->NewInstance(env->context(), 1, &type_value));
@@ -70,7 +72,7 @@ void PipeWrap::Initialize(Local<Object> target,
   Isolate* isolate = env->isolate();
 
   Local<FunctionTemplate> t = NewFunctionTemplate(isolate, New);
-  t->InstanceTemplate()->SetInternalFieldCount(StreamBase::kInternalFieldCount);
+  t->InstanceTemplate()->SetInternalFieldCount(PipeWrap::kInternalFieldCount);
 
   t->Inherit(LibuvStreamWrap::GetConstructorTemplate(env));
 
@@ -89,8 +91,7 @@ void PipeWrap::Initialize(Local<Object> target,
   env->set_pipe_constructor_template(t);
 
   // Create FunctionTemplate for PipeConnectWrap.
-  auto cwt = BaseObject::MakeLazilyInitializedJSTemplate(env);
-  cwt->Inherit(AsyncWrap::GetConstructorTemplate(env));
+  auto cwt = AsyncWrap::MakeLazilyInitializedJSTemplate(env);
   SetConstructorFunction(context, target, "PipeConnectWrap", cwt);
 
   // Define constants
@@ -223,6 +224,9 @@ void PipeWrap::Connect(const FunctionCallbackInfo<Value>& args) {
 
   Local<Object> req_wrap_obj = args[0].As<Object>();
   node::Utf8Value name(env->isolate(), args[1]);
+
+  ERR_ACCESS_DENIED_IF_INSUFFICIENT_PERMISSIONS(
+      env, permission::PermissionScope::kNet, name.ToStringView(), args);
 
   ConnectWrap* req_wrap =
       new ConnectWrap(env, req_wrap_obj, AsyncWrap::PROVIDER_PIPECONNECTWRAP);

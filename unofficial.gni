@@ -22,6 +22,11 @@ template("node_gn_build") {
     } else {
       defines += [ "HAVE_OPENSSL=0" ]
     }
+    if (node_use_sqlite) {
+      defines += [ "HAVE_SQLITE=1" ]
+    } else {
+      defines += [ "HAVE_SQLITE=0" ]
+    }
     if (node_use_amaro) {
       defines += [ "HAVE_AMARO=1" ]
     } else {
@@ -74,6 +79,7 @@ template("node_gn_build") {
       "-Wno-implicit-fallthrough",
       "-Wno-macro-redefined",
       "-Wno-missing-braces",
+      "-Wno-range-loop-bind-reference",
       "-Wno-return-type",
       "-Wno-shadow",
       "-Wno-sometimes-uninitialized",
@@ -154,12 +160,13 @@ template("node_gn_build") {
       "deps/cares",
       "deps/histogram",
       "deps/llhttp",
+      "deps/merve",
       "deps/nbytes",
       "deps/nghttp2",
       "deps/ngtcp2",
       "deps/postject",
-      "deps/sqlite",
       "deps/uvwasi",
+      "deps/zstd",
       "//third_party/zlib",
       "$node_simdutf_path",
       "$node_v8_path:v8_libplatform",
@@ -173,7 +180,10 @@ template("node_gn_build") {
       libs = [ "psapi.lib" ]
     }
     if (is_mac) {
-      frameworks = [ "CoreFoundation.framework" ]
+      frameworks = [
+        "CoreFoundation.framework",
+        "Security.framework",
+      ]
     }
     if (is_posix) {
       configs -= [ "//build/config/gcc:symbol_visibility_hidden" ]
@@ -188,14 +198,20 @@ template("node_gn_build") {
       public_deps += [ "$node_openssl_path" ]
       sources += gypi_values.node_crypto_sources
     }
+    if (node_use_sqlite) {
+      deps += [ "deps/sqlite" ]
+      sources += gypi_values.node_sqlite_sources
+    }
     if (node_enable_inspector) {
       deps += [
+        "$node_inspector_protocol_path:crdtp",
         "src/inspector:node_protocol_generated_sources",
         "src/inspector:v8_inspector_compress_protocol_json",
       ]
       include_dirs = [
         "$target_gen_dir/src",
         "$target_gen_dir/src/inspector",
+        "$node_inspector_protocol_path",
       ]
       node_inspector = exec_script(
           "./tools/gypi_to_gn.py",
@@ -308,6 +324,8 @@ template("node_gn_build") {
       "tools/executable_wrapper.h",
       "src/embedded_data.cc",
       "src/embedded_data.h",
+      "src/builtin_info.cc",
+      "src/builtin_info.h",
     ]
     include_dirs = [ "src" ]
   }
@@ -361,13 +379,26 @@ template("node_gn_build") {
       "$node_simdutf_path",
     ]
 
-    sources = gypi_values.node_cctest_sources
+    sources = [ "src/node_snapshot_stub.cc" ]
+    sources += exec_script("./tools/search_files.py",
+                           [ rebase_path(".", root_build_dir),
+                             rebase_path("test/cctest", root_build_dir),
+                             "cc" ],
+                           "list lines")
+
     if (node_use_openssl) {
       deps += [ "deps/ncrypto" ]
-      sources += gypi_values.node_cctest_openssl_sources
+    } else {
+      sources -= gypi_values.node_cctest_openssl_sources
     }
     if (node_enable_inspector) {
-      sources += gypi_values.node_cctest_inspector_sources
+      deps += [ "src/inspector:crdtp" ]
+      include_dirs = [
+        "$target_gen_dir/src",
+        "$target_gen_dir/src/inspector",
+      ]
+    } else {
+      sources -= gypi_values.node_cctest_inspector_sources
     }
   }
 

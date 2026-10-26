@@ -55,8 +55,9 @@ JSUDPWrap::JSUDPWrap(Environment* env, Local<Object> obj)
   : AsyncWrap(env, obj, PROVIDER_JSUDPWRAP) {
   MakeWeak();
 
-  obj->SetAlignedPointerInInternalField(
-      kUDPWrapBaseField, static_cast<UDPWrapBase*>(this));
+  obj->SetAlignedPointerInInternalField(kUDPWrapBaseField,
+                                        static_cast<UDPWrapBase*>(this),
+                                        EmbedderDataTag::kDefault);
 }
 
 int JSUDPWrap::RecvStart() {
@@ -99,8 +100,9 @@ ssize_t JSUDPWrap::Send(uv_buf_t* bufs,
 
   MaybeStackBuffer<Local<Value>, 16> buffers(nbufs);
   for (size_t i = 0; i < nbufs; i++) {
-    buffers[i] = Buffer::Copy(env(), bufs[i].base, bufs[i].len)
-        .ToLocalChecked();
+    if (!Buffer::Copy(env(), bufs[i].base, bufs[i].len).ToLocal(&buffers[i])) {
+      return value_int;
+    }
     total_len += bufs[i].len;
   }
 
@@ -156,7 +158,7 @@ void JSUDPWrap::EmitReceived(const FunctionCallbackInfo<Value>& args) {
   int family = args[1].As<Int32>()->Value() == 4 ? AF_INET : AF_INET6;
   Utf8Value address(env->isolate(), args[2]);
   int port = args[3].As<Int32>()->Value();
-  int flags = args[3].As<Int32>()->Value();
+  int flags = args[4].As<Int32>()->Value();
 
   sockaddr_storage addr;
   CHECK_EQ(sockaddr_for_family(family, *address, port, &addr), 0);

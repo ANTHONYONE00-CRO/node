@@ -51,6 +51,7 @@ expected.beforePreExec = new Set([
   'NativeModule events',
   'Internal Binding buffer',
   'Internal Binding string_decoder',
+  'NativeModule util/types',
   'NativeModule internal/buffer',
   'NativeModule buffer',
   'Internal Binding messaging',
@@ -74,6 +75,7 @@ expected.beforePreExec = new Set([
   'NativeModule internal/querystring',
   'NativeModule querystring',
   'Internal Binding url',
+  'Internal Binding url_pattern',
   'Internal Binding blob',
   'NativeModule internal/url',
   'NativeModule util',
@@ -87,8 +89,8 @@ expected.beforePreExec = new Set([
   'NativeModule internal/process/signal',
   'Internal Binding fs',
   'NativeModule internal/encoding',
-  'NativeModule internal/webstreams/util',
-  'NativeModule internal/webstreams/queuingstrategies',
+  'NativeModule internal/encoding/single-byte',
+  'NativeModule internal/encoding/util',
   'NativeModule internal/blob',
   'NativeModule internal/fs/utils',
   'NativeModule fs',
@@ -103,29 +105,43 @@ expected.beforePreExec = new Set([
   'Internal Binding module_wrap',
   'NativeModule internal/modules/cjs/loader',
   'NativeModule diagnostics_channel',
+  'Internal Binding diagnostics_channel',
   'Internal Binding wasm_web_api',
   'NativeModule internal/events/abort_listener',
   'NativeModule internal/modules/typescript',
-]);
-
-expected.atRunTime = new Set([
+  'NativeModule internal/data_url',
+  'NativeModule internal/mime',
+  'NativeModule internal/modules/esm/utils',
   'Internal Binding worker',
   'NativeModule internal/modules/run_main',
   'NativeModule internal/net',
   'NativeModule internal/dns/utils',
-  'NativeModule internal/process/pre_execution',
-  'NativeModule internal/modules/esm/utils',
+  'NativeModule internal/modules/esm/get_format',
 ]);
 
-if (common.isMainThread) {
+expected.atRunTime = new Set([
+  'NativeModule internal/process/pre_execution',
+]);
+
+const { isMainThread } = require('worker_threads');
+
+if (isMainThread) {
   [
+    'Internal Binding cjs_lexer',
+    'NativeModule internal/modules/esm/assert',
+    'NativeModule internal/modules/esm/loader',
+    'NativeModule internal/modules/esm/load',
+    'NativeModule internal/modules/esm/resolve',
+    'NativeModule internal/modules/esm/translators',
     'NativeModule url',
   ].forEach(expected.beforePreExec.add.bind(expected.beforePreExec));
 } else {  // Worker.
   [
+    'Internal Binding locks',
     'NativeModule diagnostics_channel',
     'NativeModule internal/abort_controller',
     'NativeModule internal/error_serdes',
+    'NativeModule internal/locks',
     'NativeModule internal/perf/event_loop_utilization',
     'NativeModule internal/process/worker_thread_only',
     'NativeModule internal/streams/add-abort-signal',
@@ -168,7 +184,7 @@ if (common.hasIntl) {
 if (process.features.inspector) {
   expected.beforePreExec.add('Internal Binding inspector');
   expected.beforePreExec.add('NativeModule internal/util/inspector');
-  expected.atRunTime.add('NativeModule internal/inspector_async_hook');
+  expected.beforePreExec.add('NativeModule internal/inspector_async_hook');
 }
 
 // This is loaded if the test is run with NODE_V8_COVERAGE.
@@ -188,7 +204,7 @@ function err(message) {
   }
 }
 
-if (common.isMainThread) {
+if (isMainThread) {
   const missing = expected.beforePreExec.difference(actual.beforePreExec);
   const extra = actual.beforePreExec.difference(expected.beforePreExec);
   if (missing.size !== 0) {
@@ -214,10 +230,10 @@ if (common.isMainThread) {
   }
 }
 
-if (!common.isMainThread) {
+if (!isMainThread) {
   // For workers, just merge beforePreExec into atRunTime for now.
   // When we start adding modules to the worker snapshot, this branch
-  // can be removed and  we can just remove the common.isMainThread
+  // can be removed and  we can just remove the isMainThread
   // conditions.
   expected.beforePreExec.forEach(expected.atRunTime.add.bind(expected.atRunTime));
   actual.beforePreExec.forEach(actual.atRunTime.add.bind(actual.atRunTime));

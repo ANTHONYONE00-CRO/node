@@ -10,12 +10,14 @@
 #include <limits.h>
 #include <pthread.h>
 
+#include "src/base/fpu.h"
 #include "src/base/logging.h"
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>  // for pthread_set_name_np
 #endif
 #include <fcntl.h>
 #include <sched.h>  // for sched_yield
+#include <signal.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -39,6 +41,7 @@
 
 #include "src/base/lazy-instance.h"
 #include "src/base/macros.h"
+#include "src/base/platform/mutex.h"
 #include "src/base/platform/platform-posix.h"
 #include "src/base/platform/platform.h"
 #include "src/base/platform/time.h"
@@ -55,6 +58,8 @@
 #if V8_OS_DARWIN
 #include <mach/mach.h>
 #include <malloc/malloc.h>
+#elif V8_OS_OPENBSD
+#include <sys/malloc.h>
 #elif !V8_OS_ZOS
 #include <malloc.h>
 #endif
@@ -77,7 +82,19 @@
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
-#if defined(V8_OS_SOLARIS)
+/*
+ * NOTE: illumos starting with illumos#14418 (pushed April 20th, 2022)
+ * prototypes madvise(3C) properly with a `void *` first argument.
+ * The only way to detect this outside of configure-time checking is to
+ * check for the existence of MEMCNTL_SHARED, which gets defined for the first
+ * time in illumos#14418 under the same circumstances save _STRICT_POSIX, which
+ * thankfully neither Solaris nor illumos builds of Node or V8 do.
+ *
+ * If some future illumos push changes the MEMCNTL_SHARED assumptions made
+ * above, the illumos check below will have to be revisited.  This check
+ * will work on both pre-and-post illumos#14418 illumos environments.
+ */
+#if defined(V8_OS_SOLARIS) && !(defined(__illumos__) && defined(MEMCNTL_SHARED))
 #if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE > 2) || defined(__EXTENSIONS__)
 extern "C" int madvise(caddr_t, size_t, int);
 #else
@@ -112,15 +129,6 @@ DEFINE_LAZY_LEAKY_OBJECT_GETTER(RandomNumberGenerator,
 static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
 
 #if !V8_OS_FUCHSIA && !V8_OS_ZOS
-#if V8_OS_DARWIN
-// kMmapFd is used to pass vm_alloc flags to tag the region with the user
-// defined tag 255 This helps identify V8-allocated regions in memory analysis
-// tools like vmmap(1).
-const int kMmapFd = VM_MAKE_TAG(255);
-#else   // !V8_OS_DARWIN
-const int kMmapFd = -1;
-#endif  // !V8_OS_DARWIN
-
 #if defined(V8_TARGET_OS_MACOS) && V8_HOST_ARCH_ARM64
 // During snapshot generation in cross builds, sysconf() runs on the Intel
 // host and returns host page size, while the snapshot needs to use the
@@ -132,9 +140,16 @@ const int kMmapFdOffset = 0;
 
 enum class PageType { kShared, kPrivate };
 
-int GetFlagsForMemoryPermission(OS::MemoryPermission access,
-                                PageType page_type) {
-  int flags = MAP_ANONYMOUS;
+int GetFlagsForMemoryPermission(OS::MemoryPermission access, PageType page_type,
+                                PlatformSharedMemoryHandle handle,
+                                bool fixed = false) {
+  int flags = 0;
+  if (handle == kInvalidSharedMemoryHandle) {
+    flags |= MAP_ANONYMOUS;
+  }
+  if (fixed) {
+    flags |= MAP_FIXED;
+  }
   flags |= (page_type == PageType::kShared) ? MAP_SHARED : MAP_PRIVATE;
   if (access == OS::MemoryPermission::kNoAccess ||
       access == OS::MemoryPermission::kNoAccessWillJitLater) {
@@ -159,10 +174,20 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access,
 }
 
 void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
-               PageType page_type) {
+               PageType page_type,
+               PlatformSharedMemoryHandle handle = kInvalidSharedMemoryHandle,
+               bool fixed = false) {
   int prot = GetProtectionFromMemoryPermission(access);
-  int flags = GetFlagsForMemoryPermission(access, page_type);
-  void* result = mmap(hint, size, prot, flags, kMmapFd, kMmapFdOffset);
+  int flags = GetFlagsForMemoryPermission(access, page_type, handle, fixed);
+#if V8_OS_DARWIN
+  // fd is used to pass vm_alloc flags to tag the region with the user
+  // defined tag 255 This helps identify V8-allocated regions in memory analysis
+  // tools like vmmap(1).
+  int fd = VM_MAKE_TAG(255);
+#else
+  int fd = FileDescriptorFromSharedMemoryHandle(handle);
+#endif
+  void* result = mmap(hint, size, prot, flags, fd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
 
 #if V8_OS_LINUX && V8_ENABLE_PRIVATE_MAPPING_FORK_OPTIMIZATION
@@ -269,14 +294,50 @@ void OS::Initialize(AbortMode abort_mode, const char* const gc_fake_mmap) {
 
 bool OS::IsHardwareEnforcedShadowStacksEnabled() { return false; }
 
+void OS::EnsureAlternativeSignalStackIsAvailableForCurrentThread() {
+// sigaltstack() is forbidden on tvOS and its usage causes build errors.
+#if !V8_OS_TVOS
+  stack_t ss, old_ss;
+  memset(&ss, 0, sizeof(stack_t));
+  memset(&old_ss, 0, sizeof(stack_t));
+
+  if (sigaltstack(nullptr, &old_ss) == -1) {
+    FATAL("sigaltstack failed with error %d: %s", errno, strerror(errno));
+  }
+
+  // If an alternative stack is already registered, there's nothing left to do.
+  if (!(old_ss.ss_flags & SS_DISABLE)) return;
+
+  // The default alternative stack size of SIGSTKSZ can be too small (e.g.
+  // 8192). For example the profiler signal handler requires a larger stack.
+  const size_t kStackSize = 1024 * 1024;
+  CHECK_GE(kStackSize, SIGSTKSZ);
+  // Allocate the alternative stack with guard regions on both sides to
+  // ensure that we catch stack overflows (and similar issues) on that stack.
+  const size_t kPageSize = AllocatePageSize();
+  const size_t kAllocationSize = kStackSize + 2 * kPageSize;
+  void* ptr = Allocate(nullptr, kAllocationSize, kPageSize,
+                       MemoryPermission::kNoAccess);
+  CHECK_NE(ptr, nullptr);
+  void* stack_ptr = reinterpret_cast<char*>(ptr) + kPageSize;
+  CHECK(SetPermissions(stack_ptr, kStackSize, MemoryPermission::kReadWrite));
+
+  ss.ss_sp = stack_ptr;
+  ss.ss_size = kStackSize;
+  ss.ss_flags = 0;
+
+  if (sigaltstack(&ss, nullptr) == -1) {
+    FATAL("sigaltstack failed with error %d: %s", errno, strerror(errno));
+  }
+#endif
+}
+
 int OS::ActivationFrameAlignment() {
 #if V8_TARGET_ARCH_ARM
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
-#elif V8_TARGET_ARCH_MIPS
-  return 8;
-#elif V8_TARGET_ARCH_S390
+#elif V8_TARGET_ARCH_S390X
   return 8;
 #else
   // Otherwise we just assume 16 byte alignment, i.e.:
@@ -336,21 +397,27 @@ void* OS::GetRandomMmapAddr() {
   raw_addr &= 0x007fffff0000ULL;
   raw_addr += 0x7e8000000000ULL;
 #else
-#if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
+#if V8_TARGET_ARCH_X64
   // Currently available CPUs have 48 bits of virtual addressing.  Truncate
   // the hint address to 46 bits to give the kernel a fighting chance of
   // fulfilling our placement request.
   raw_addr &= uint64_t{0x3FFFFFFFF000};
+#elif V8_TARGET_ARCH_ARM64
+#if defined(V8_TARGET_OS_LINUX) || defined(V8_TARGET_OS_ANDROID)
+  // On Linux, the default virtual address space is limited to 39 bits when
+  // using 4KB pages, see arch/arm64/Kconfig. We truncate to 38 bits.
+  raw_addr &= uint64_t{0x3FFFFFF000};
+#else
+  // On macOS and elsewhere, we use 46 bits, same as on x64.
+  raw_addr &= uint64_t{0x3FFFFFFFF000};
+#endif
 #elif V8_TARGET_ARCH_PPC64
 #if V8_OS_AIX
-  // AIX: 64 bits of virtual addressing, but we limit address range to:
-  //   a) minimize Segment Lookaside Buffer (SLB) misses and
+  // AIX: 64 bits of virtual addressing, but we limit address range to minimize
+  // Segment Lookaside Buffer (SLB) misses.
   raw_addr &= uint64_t{0x3FFFF000};
   // Use extra address space to isolate the mmap regions.
   raw_addr += uint64_t{0x400000000000};
-#elif V8_TARGET_BIG_ENDIAN
-  // Big-endian Linux: 42 bits of virtual addressing.
-  raw_addr &= uint64_t{0x03FFFFFFF000};
 #else
   // Little-endian Linux: 46 bits of virtual addressing.
   raw_addr &= uint64_t{0x3FFFFFFF0000};
@@ -360,10 +427,6 @@ void* OS::GetRandomMmapAddr() {
   // of virtual addressing.  Truncate to 40 bits to allow kernel chance to
   // fulfill request.
   raw_addr &= uint64_t{0xFFFFFFF000};
-#elif V8_TARGET_ARCH_S390
-  // 31 bits of virtual addressing.  Truncate to 29 bits to allow kernel chance
-  // to fulfill request.
-  raw_addr &= 0x1FFFF000;
 #elif V8_TARGET_ARCH_MIPS64
   // 42 bits of virtual addressing. Truncate to 40 bits to allow kernel chance
   // to fulfill request.
@@ -414,7 +477,7 @@ void* OS::GetRandomMmapAddr() {
 #if !V8_OS_ZOS
 // static
 void* OS::Allocate(void* hint, size_t size, size_t alignment,
-                   MemoryPermission access) {
+                   MemoryPermission access, PlatformSharedMemoryHandle handle) {
   size_t page_size = AllocatePageSize();
   DCHECK_EQ(0, size % page_size);
   DCHECK_EQ(0, alignment % page_size);
@@ -422,7 +485,8 @@ void* OS::Allocate(void* hint, size_t size, size_t alignment,
   // Add the maximum misalignment so we are guaranteed an aligned base address.
   size_t request_size = size + (alignment - page_size);
   request_size = RoundUp(request_size, OS::AllocatePageSize());
-  void* result = base::Allocate(hint, request_size, access, PageType::kPrivate);
+  PageType page_type = PageType::kPrivate;
+  void* result = base::Allocate(hint, request_size, access, page_type, handle);
   if (result == nullptr) return nullptr;
 
   // Unmap memory allocated before the aligned base address.
@@ -444,6 +508,17 @@ void* OS::Allocate(void* hint, size_t size, size_t alignment,
   }
 
   DCHECK_EQ(size, request_size);
+
+  if (aligned_base != base && handle != kInvalidSharedMemoryHandle) {
+    // We have to remap because the base of mapping must correspond to the base
+    // of the the underlying file.
+    uint8_t* new_base = reinterpret_cast<uint8_t*>(base::Allocate(
+        aligned_base, size, access, page_type, handle, true /* fixed */));
+    if (new_base != aligned_base) {
+      return nullptr;
+    }
+  }
+
   return static_cast<void*>(aligned_base);
 }
 
@@ -614,23 +689,37 @@ bool OS::DecommitPages(void* address, size_t size) {
 #endif  // !V8_OS_ZOS
 
 // static
+bool OS::SealPages(void* address, size_t size) {
+#ifdef V8_ENABLE_MEMORY_SEALING
+#if V8_OS_LINUX && defined(__NR_mseal)
+  long ret = syscall(__NR_mseal, address, size, 0);
+  return ret == 0;
+#else
+  return false;
+#endif
+#else  // V8_ENABLE_MEMORY_SEALING
+  return false;
+#endif
+}
+
+// static
 bool OS::CanReserveAddressSpace() { return true; }
 
 // static
 std::optional<AddressSpaceReservation> OS::CreateAddressSpaceReservation(
-    void* hint, size_t size, size_t alignment,
-    MemoryPermission max_permission) {
+    void* hint, size_t size, size_t alignment, MemoryPermission max_permission,
+    PlatformSharedMemoryHandle handle) {
   // On POSIX, address space reservations are backed by private memory mappings.
   MemoryPermission permission = MemoryPermission::kNoAccess;
   if (max_permission == MemoryPermission::kReadWriteExecute) {
     permission = MemoryPermission::kNoAccessWillJitLater;
   }
 
-  void* reservation = Allocate(hint, size, alignment, permission);
+  void* reservation = Allocate(hint, size, alignment, permission, handle);
   if (!reservation && permission == MemoryPermission::kNoAccessWillJitLater) {
     // Retry without MAP_JIT, for example in case we are running on an old OS X.
     permission = MemoryPermission::kNoAccess;
-    reservation = Allocate(hint, size, alignment, permission);
+    reservation = Allocate(hint, size, alignment, permission, handle);
   }
 
   if (!reservation) return {};
@@ -710,6 +799,7 @@ void OS::Abort() {
       _exit(-1);
     case AbortMode::kImmediateCrash:
       IMMEDIATE_CRASH();
+    case AbortMode::kExitIfNoSecurityImpact:
     case AbortMode::kDefault:
       break;
   }
@@ -729,7 +819,7 @@ void OS::DebugBreak() {
   asm("break");
 #elif V8_HOST_ARCH_LOONG64
   asm("break 0");
-#elif V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64
+#elif V8_HOST_ARCH_PPC64
   asm("twge 2,2");
 #elif V8_HOST_ARCH_IA32
   asm("int $3");
@@ -737,7 +827,7 @@ void OS::DebugBreak() {
   asm("int $3");
 #elif V8_OS_ZOS
   asm(" dc x'0001'");
-#elif V8_HOST_ARCH_S390
+#elif V8_HOST_ARCH_S390X
   // Software breakpoint instruction is 0x0001
   asm volatile(".word 0x0001");
 #elif V8_HOST_ARCH_RISCV64
@@ -825,8 +915,7 @@ int OS::GetCurrentProcessId() {
   return static_cast<int>(getpid());
 }
 
-
-int OS::GetCurrentThreadId() {
+int OS::GetCurrentThreadIdInternal() {
 #if V8_OS_DARWIN || (V8_OS_ANDROID && defined(__APPLE__))
   return static_cast<int>(pthread_mach_thread_np(pthread_self()));
 #elif V8_OS_LINUX
@@ -1174,6 +1263,10 @@ static void SetThreadName(const char* name) {
 }
 
 static void* ThreadEntry(void* arg) {
+  // Reset denormals state to default, in case we picked up a non-default one
+  // with the posix clone() call.
+  base::FPU::SetFlushDenormals(false);
+
   Thread* thread = reinterpret_cast<Thread*>(arg);
   // We take the lock here to make sure that pthread_create finished first since
   // we don't know which thread will run first (the original thread or the new
@@ -1349,6 +1442,15 @@ bool MainThreadIsCurrentThread() {
 Stack::StackSlot Stack::ObtainCurrentThreadStackStart() {
 #if V8_OS_ZOS
   return __get_stack_start();
+#elif V8_OS_OPENBSD
+  stack_t stack;
+  int error = pthread_stackseg_np(pthread_self(), &stack);
+  if(error) {
+    DCHECK(MainThreadIsCurrentThread());
+    return nullptr;
+  }
+  void* stack_start = reinterpret_cast<uint8_t*>(stack.ss_sp) + stack.ss_size;
+  return stack_start;
 #else
   pthread_attr_t attr;
   int error = pthread_getattr_np(pthread_self(), &attr);

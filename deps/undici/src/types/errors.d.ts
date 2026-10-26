@@ -33,18 +33,19 @@ declare namespace Errors {
     code: 'UND_ERR_BODY_TIMEOUT'
   }
 
-  export class ResponseStatusCodeError extends UndiciError {
+  export class ResponseError extends UndiciError {
     constructor (
-      message?: string,
-      statusCode?: number,
-      headers?: IncomingHttpHeaders | string[] | null,
-      body?: null | Record<string, any> | string
+      message: string,
+      code: number,
+      options: {
+        headers?: IncomingHttpHeaders | string[] | null,
+        body?: null | Record<string, any> | string
+      }
     )
-    name: 'ResponseStatusCodeError'
-    code: 'UND_ERR_RESPONSE_STATUS_CODE'
-    body: null | Record<string, any> | string
-    status: number
+    name: 'ResponseError'
+    code: 'UND_ERR_RESPONSE'
     statusCode: number
+    body: null | Record<string, any> | string
     headers: IncomingHttpHeaders | string[] | null
   }
 
@@ -151,5 +152,26 @@ declare namespace Errors {
     )
     name: 'SecureProxyConnectionError'
     code: 'UND_ERR_PRX_TLS'
+  }
+
+  export class MaxOriginsReachedError extends UndiciError {
+    name: 'MaxOriginsReachedError'
+    code: 'UND_ERR_MAX_ORIGINS_REACHED'
+  }
+
+  /** SOCKS5 proxy related error. */
+  export class Socks5ProxyError extends UndiciError {
+    constructor (
+      message?: string,
+      code?: string
+    )
+    name: 'Socks5ProxyError'
+    code: string
+  }
+
+  /** WebSocket decompressed message exceeded maximum size. */
+  export class MessageSizeExceededError extends UndiciError {
+    name: 'MessageSizeExceededError'
+    code: 'UND_ERR_WS_MESSAGE_SIZE_EXCEEDED'
   }
 }

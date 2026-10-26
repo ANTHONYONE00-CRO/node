@@ -3,6 +3,7 @@ import * as fixtures from '../common/fixtures.mjs';
 import { join } from 'node:path';
 import { describe, it, run } from 'node:test';
 import { dot, spec, tap } from 'node:test/reporters';
+import consumers from 'node:stream/consumers';
 import assert from 'node:assert';
 import util from 'node:util';
 
@@ -31,6 +32,24 @@ describe('require(\'node:test\').run', { concurrency: true }, () => {
     stream.on('test:pass', common.mustCall(1));
     // eslint-disable-next-line no-unused-vars
     for await (const _ of stream);
+  });
+
+  it('should emit diagnostic events with level parameter', async () => {
+    const diagnosticEvents = [];
+
+    const stream = run({
+      files: [join(testFixtures, 'coverage.js')],
+      reporter: 'spec',
+    });
+
+    stream.on('test:diagnostic', (event) => {
+      diagnosticEvents.push(event);
+    });
+    // eslint-disable-next-line no-unused-vars
+    for await (const _ of stream);
+    assert(diagnosticEvents.length > 0, 'No diagnostic events were emitted');
+    const infoEvent = diagnosticEvents.find((e) => e.level === 'info');
+    assert(infoEvent, 'No diagnostic events with level "info" were emitted');
   });
 
   const argPrintingFile = join(testFixtures, 'print-arguments.js');
@@ -70,10 +89,11 @@ describe('require(\'node:test\').run', { concurrency: true }, () => {
 
   it('should support timeout', async () => {
     const stream = run({ timeout: 50, files: [
-      fixtures.path('test-runner', 'never_ending_sync.js'),
-      fixtures.path('test-runner', 'never_ending_async.js'),
+      fixtures.path('test-runner', 'plan', 'timeout-basic.mjs'),
     ] });
-    stream.on('test:fail', common.mustCall(2));
+    stream.on('test:fail', common.mustCall((data) => {
+      assert.strictEqual(data.details.error.failureType, 'testTimeoutFailure');
+    }, 2));
     stream.on('test:pass', common.mustNotCall());
     // eslint-disable-next-line no-unused-vars
     for await (const _ of stream);
@@ -92,34 +112,31 @@ describe('require(\'node:test\').run', { concurrency: true }, () => {
   describe('should be piped with spec reporter', () => {
     it('new spec', async () => {
       const specReporter = new spec();
-      const result = await run({
+      const result = await consumers.text(run({
         files: [join(testFixtures, 'default-behavior/test/random.cjs')]
-      }).compose(specReporter).toArray();
-      const stringResults = result.map((bfr) => bfr.toString());
-      assert.match(stringResults[0], /this should pass/);
-      assert.match(stringResults[1], /tests 1/);
-      assert.match(stringResults[1], /pass 1/);
+      }).compose(specReporter));
+      assert.match(result, /this should pass/);
+      assert.match(result, /tests 1/);
+      assert.match(result, /pass 1/);
     });
 
     it('spec()', async () => {
       const specReporter = spec();
-      const result = await run({
+      const result = await consumers.text(run({
         files: [join(testFixtures, 'default-behavior/test/random.cjs')]
-      }).compose(specReporter).toArray();
-      const stringResults = result.map((bfr) => bfr.toString());
-      assert.match(stringResults[0], /this should pass/);
-      assert.match(stringResults[1], /tests 1/);
-      assert.match(stringResults[1], /pass 1/);
+      }).compose(specReporter));
+      assert.match(result, /this should pass/);
+      assert.match(result, /tests 1/);
+      assert.match(result, /pass 1/);
     });
 
     it('spec', async () => {
-      const result = await run({
+      const result = await consumers.text(run({
         files: [join(testFixtures, 'default-behavior/test/random.cjs')]
-      }).compose(spec).toArray();
-      const stringResults = result.map((bfr) => bfr.toString());
-      assert.match(stringResults[0], /this should pass/);
-      assert.match(stringResults[1], /tests 1/);
-      assert.match(stringResults[1], /pass 1/);
+      }).compose(spec));
+      assert.match(result, /this should pass/);
+      assert.match(result, /tests 1/);
+      assert.match(result, /pass 1/);
     });
   });
 
@@ -192,6 +209,33 @@ describe('require(\'node:test\').run', { concurrency: true }, () => {
         controller.abort();
       }
     });
+  });
+
+  it('should include test type in enqueue, dequeue events', async (t) => {
+    const stream = await run({
+      files: [join(testFixtures, 'default-behavior/test/suite_and_test.cjs')],
+    });
+    t.plan(4);
+
+    stream.on('test:enqueue', common.mustCall((data) => {
+      if (data.name === 'this is a suite') {
+        t.assert.strictEqual(data.type, 'suite');
+      }
+      if (data.name === 'this is a test') {
+        t.assert.strictEqual(data.type, 'test');
+      }
+    }, 3));
+    stream.on('test:dequeue', common.mustCall((data) => {
+      if (data.name === 'this is a suite') {
+        t.assert.strictEqual(data.type, 'suite');
+      }
+      if (data.name === 'this is a test') {
+        t.assert.strictEqual(data.type, 'test');
+      }
+    }, 3));
+
+    // eslint-disable-next-line no-unused-vars
+    for await (const _ of stream);
   });
 
   describe('AbortSignal', () => {
@@ -601,6 +645,29 @@ describe('require(\'node:test\').run', { concurrency: true }, () => {
     ) {
       assert.strictEqual(diagnostics.includes(entry), true);
     }
+  });
+});
+
+describe('env', () => {
+  it('should allow env variables to be configured', async () => {
+    // Need to inherit some process.env variables so it runs reliably across different environments.
+    const env = { ...process.env, FOOBAR: 'FUZZBUZZ' };
+    // Set a variable on main process env and test it does not exist within test env.
+    process.env.ABC = 'XYZ';
+
+    const stream = run({ files: [join(testFixtures, 'process-env.js')], env });
+    stream.on('test:fail', common.mustNotCall());
+    stream.on('test:pass', common.mustCall(1));
+    // eslint-disable-next-line no-unused-vars
+    for await (const _ of stream);
+    delete process.env.ABC;
+  });
+
+  it('should throw error when env is specified with isolation=none', async () => {
+    assert.throws(() => run({ env: { foo: 'bar' }, isolation: 'none' }), {
+      code: 'ERR_INVALID_ARG_VALUE',
+      message: /The property 'options\.env' is not supported with isolation='none'\. Received { foo: 'bar' }/
+    });
   });
 });
 

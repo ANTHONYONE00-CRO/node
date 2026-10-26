@@ -1,7 +1,4 @@
-<!--
-  NB(chrisdickinson): if you move this file, be sure to update
-  tools/doc/html.mjs to point at the new location.
--->
+# Index
 
 <!--introduced_in=v0.10.0-->
 
@@ -21,13 +18,13 @@
 * [Cluster](cluster.md)
 * [Command-line options](cli.md)
 * [Console](console.md)
-* [Corepack](corepack.md)
 * [Crypto](crypto.md)
 * [Debugger](debugger.md)
 * [Deprecated APIs](deprecations.md)
 * [Diagnostics Channel](diagnostics_channel.md)
 * [DNS](dns.md)
 * [Domain](domain.md)
+* [Environment Variables](environment_variables.md)
 * [Errors](errors.md)
 * [Events](events.md)
 * [File system](fs.md)

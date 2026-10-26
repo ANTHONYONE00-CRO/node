@@ -1,13 +1,18 @@
-// Flags: --experimental-permission --allow-fs-read=*
+// Flags: --permission --allow-fs-read=*
 'use strict';
 
 const common = require('../common');
-common.skipIfWorker();
+const { isMainThread } = require('worker_threads');
+
+if (!isMainThread) {
+  common.skip('This test only works on a main thread');
+}
+
 const assert = require('assert');
 const childProcess = require('child_process');
 
 if (process.argv[2] === 'child') {
-  process.exit(0);
+  return;
 }
 
 // Guarantee the initial state
@@ -21,14 +26,17 @@ if (process.argv[2] === 'child') {
   assert.throws(() => {
     childProcess.spawn(process.execPath, ['--version']);
   }, common.expectsError({
+    message: 'Access to this API has been restricted. Use --allow-child-process to manage permissions.',
     code: 'ERR_ACCESS_DENIED',
     permission: 'ChildProcess',
+    resource: process.execPath,
   }));
   assert.throws(() => {
     childProcess.spawnSync(process.execPath, ['--version']);
   }, common.expectsError({
     code: 'ERR_ACCESS_DENIED',
     permission: 'ChildProcess',
+    resource: process.execPath,
   }));
   assert.throws(() => {
     childProcess.exec(...common.escapePOSIXShell`"${process.execPath}" --version`);
@@ -47,6 +55,7 @@ if (process.argv[2] === 'child') {
   }, common.expectsError({
     code: 'ERR_ACCESS_DENIED',
     permission: 'ChildProcess',
+    resource: process.execPath,
   }));
   assert.throws(() => {
     childProcess.execFile(...common.escapePOSIXShell`"${process.execPath}" --version`);

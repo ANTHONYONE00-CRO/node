@@ -53,7 +53,7 @@ class RefTracker {
 struct napi_env__ {
   explicit napi_env__(v8::Local<v8::Context> context,
                       int32_t module_api_version)
-      : isolate(context->GetIsolate()),
+      : isolate(v8::Isolate::GetCurrent()),
         context_persistent(isolate, context),
         module_api_version(module_api_version) {
     napi_clear_last_error(this);
@@ -142,7 +142,7 @@ struct napi_env__ {
     }
   }
 
-  v8::Isolate* const isolate;  // Shortcut for context()->GetIsolate()
+  v8::Isolate* const isolate;  // Shortcut for Isolate::GetCurrent()
   v8impl::Persistent<v8::Context> context_persistent;
 
   v8impl::Persistent<v8::Value> last_exception;
@@ -234,11 +234,11 @@ inline napi_status napi_set_last_error(node_api_basic_env basic_env,
   CHECK_ENV_NOT_IN_GC((env));                                                  \
   RETURN_STATUS_IF_FALSE(                                                      \
       (env), (env)->last_exception.IsEmpty(), napi_pending_exception);         \
-  RETURN_STATUS_IF_FALSE((env),                                                \
-                         (env)->can_call_into_js(),                            \
-                         (env->module_api_version == NAPI_VERSION_EXPERIMENTAL \
-                              ? napi_cannot_run_js                             \
-                              : napi_pending_exception));                      \
+  RETURN_STATUS_IF_FALSE(                                                      \
+      (env),                                                                   \
+      (env)->can_call_into_js(),                                               \
+      (env->module_api_version >= 10 ? napi_cannot_run_js                      \
+                                     : napi_pending_exception));               \
   napi_clear_last_error((env));                                                \
   v8impl::TryCatch try_catch((env))
 

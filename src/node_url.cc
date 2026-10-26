@@ -10,6 +10,7 @@
 #include "path.h"
 #include "util-inl.h"
 #include "v8-fast-api-calls.h"
+#include "v8-local-handle.h"
 #include "v8.h"
 
 #include <cstdint>
@@ -21,14 +22,14 @@ namespace url {
 
 using v8::CFunction;
 using v8::Context;
-using v8::FastOneByteString;
+using v8::FastApiCallbackOptions;
 using v8::FunctionCallbackInfo;
 using v8::HandleScope;
 using v8::Isolate;
 using v8::Local;
-using v8::NewStringType;
 using v8::Object;
 using v8::ObjectTemplate;
+using v8::SnapshotCreator;
 using v8::String;
 using v8::Value;
 
@@ -36,7 +37,7 @@ void BindingData::MemoryInfo(MemoryTracker* tracker) const {
   tracker->TrackField("url_components_buffer", url_components_buffer_);
 }
 
-BindingData::BindingData(Realm* realm, v8::Local<v8::Object> object)
+BindingData::BindingData(Realm* realm, Local<Object> object)
     : SnapshotableObject(realm, object, type_int),
       url_components_buffer_(realm->isolate(), kURLComponentsLength) {
   object
@@ -47,8 +48,8 @@ BindingData::BindingData(Realm* realm, v8::Local<v8::Object> object)
   url_components_buffer_.MakeWeak();
 }
 
-bool BindingData::PrepareForSerialization(v8::Local<v8::Context> context,
-                                          v8::SnapshotCreator* creator) {
+bool BindingData::PrepareForSerialization(Local<Context> context,
+                                          SnapshotCreator* creator) {
   // We'll just re-initialize the buffers in the constructor since their
   // contents can be thrown away once consumed in the previous call.
   url_components_buffer_.Release();
@@ -64,12 +65,12 @@ InternalFieldInfoBase* BindingData::Serialize(int index) {
   return info;
 }
 
-void BindingData::Deserialize(v8::Local<v8::Context> context,
-                              v8::Local<v8::Object> holder,
+void BindingData::Deserialize(Local<Context> context,
+                              Local<Object> holder,
                               int index,
                               InternalFieldInfoBase* info) {
   DCHECK_IS_SNAPSHOT_SLOT(index);
-  v8::HandleScope scope(context->GetIsolate());
+  HandleScope scope(Isolate::GetCurrent());
   Realm* realm = Realm::GetCurrent(context);
   BindingData* binding = realm->AddBindingData<BindingData>(holder);
   CHECK_NOT_NULL(binding);
@@ -161,7 +162,7 @@ void BindingData::PathToFileURL(const FunctionCallbackInfo<Value>& args) {
       ada::parse<ada::url_aggregator>(EncodePathChars(input_str, os), nullptr);
 
   if (!out) {
-    return ThrowInvalidURL(realm->env(), input.ToStringView(), nullptr);
+    return ThrowInvalidURL(realm->env(), input.ToStringView(), std::nullopt);
   }
 
   if (os == OS::WINDOWS && args.Length() > 2 && !args[2]->IsUndefined())
@@ -173,8 +174,11 @@ void BindingData::PathToFileURL(const FunctionCallbackInfo<Value>& args) {
 
   binding_data->UpdateComponents(out->get_components(), out->type);
 
-  args.GetReturnValue().Set(
-      ToV8Value(realm->context(), out->get_href(), isolate).ToLocalChecked());
+  Local<Value> ret;
+  if (ToV8Value(realm->context(), out->get_href(), isolate).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::DomainToASCII(const FunctionCallbackInfo<Value>& args) {
@@ -196,8 +200,12 @@ void BindingData::DomainToASCII(const FunctionCallbackInfo<Value>& args) {
     return args.GetReturnValue().Set(String::Empty(env->isolate()));
   }
   std::string host = out->get_hostname();
-  args.GetReturnValue().Set(
-      String::NewFromUtf8(env->isolate(), host.c_str()).ToLocalChecked());
+
+  Local<Value> ret;
+  if (ToV8Value(env->context(), host, env->isolate()).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::DomainToUnicode(const FunctionCallbackInfo<Value>& args) {
@@ -220,14 +228,14 @@ void BindingData::DomainToUnicode(const FunctionCallbackInfo<Value>& args) {
   }
   std::string result = ada::idna::to_unicode(out->get_hostname());
 
-  args.GetReturnValue().Set(String::NewFromUtf8(env->isolate(),
-                                                result.c_str(),
-                                                NewStringType::kNormal,
-                                                result.length())
-                                .ToLocalChecked());
+  Local<Value> ret;
+  if (ToV8Value(env->context(), result, env->isolate()).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
-void BindingData::GetOrigin(const v8::FunctionCallbackInfo<Value>& args) {
+void BindingData::GetOrigin(const FunctionCallbackInfo<Value>& args) {
   CHECK_GE(args.Length(), 1);
   CHECK(args[0]->IsString());  // input
 
@@ -244,11 +252,12 @@ void BindingData::GetOrigin(const v8::FunctionCallbackInfo<Value>& args) {
   }
 
   std::string origin = out->get_origin();
-  args.GetReturnValue().Set(String::NewFromUtf8(env->isolate(),
-                                                origin.data(),
-                                                NewStringType::kNormal,
-                                                origin.length())
-                                .ToLocalChecked());
+
+  Local<Value> ret;
+  if (ToV8Value(env->context(), origin, env->isolate()).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::CanParse(const FunctionCallbackInfo<Value>& args) {
@@ -274,18 +283,45 @@ void BindingData::CanParse(const FunctionCallbackInfo<Value>& args) {
   args.GetReturnValue().Set(can_parse);
 }
 
-bool BindingData::FastCanParse(Local<Value> receiver,
-                               const FastOneByteString& input) {
+bool BindingData::FastCanParse(
+    Local<Value> receiver,
+    Local<Value> input,
+    // NOLINTNEXTLINE(runtime/references) This is V8 api.
+    FastApiCallbackOptions& options) {
   TRACK_V8_FAST_API_CALL("url.canParse");
-  return ada::can_parse(std::string_view(input.data, input.length));
+  auto isolate = options.isolate;
+  HandleScope handleScope(isolate);
+  Local<String> str;
+  if (!input->ToString(isolate->GetCurrentContext()).ToLocal(&str)) {
+    return false;
+  }
+  Utf8Value utf8(isolate, str);
+  return ada::can_parse(utf8.ToStringView());
 }
 
-bool BindingData::FastCanParseWithBase(Local<Value> receiver,
-                                       const FastOneByteString& input,
-                                       const FastOneByteString& base) {
+bool BindingData::FastCanParseWithBase(
+    Local<Value> receiver,
+    Local<Value> input,
+    Local<Value> base,
+    // NOLINTNEXTLINE(runtime/references) This is V8 api.
+    FastApiCallbackOptions& options) {
   TRACK_V8_FAST_API_CALL("url.canParse.withBase");
-  auto base_view = std::string_view(base.data, base.length);
-  return ada::can_parse(std::string_view(input.data, input.length), &base_view);
+  auto isolate = options.isolate;
+  HandleScope handleScope(isolate);
+  auto context = isolate->GetCurrentContext();
+  Local<String> input_str;
+  if (!input->ToString(context).ToLocal(&input_str)) {
+    return false;
+  }
+  Local<String> base_str;
+  if (!base->ToString(context).ToLocal(&base_str)) {
+    return false;
+  }
+  Utf8Value input_utf8(isolate, input_str);
+  Utf8Value base_utf8(isolate, base_str);
+
+  auto base_view = base_utf8.ToStringView();
+  return ada::can_parse(input_utf8.ToStringView(), &base_view);
 }
 
 CFunction BindingData::fast_can_parse_methods_[] = {
@@ -328,11 +364,12 @@ void BindingData::Format(const FunctionCallbackInfo<Value>& args) {
   }
 
   std::string result = out->get_href();
-  args.GetReturnValue().Set(String::NewFromUtf8(env->isolate(),
-                                                result.data(),
-                                                NewStringType::kNormal,
-                                                result.length())
-                                .ToLocalChecked());
+
+  Local<Value> ret;
+  if (ToV8Value(env->context(), result, env->isolate()).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::Parse(const FunctionCallbackInfo<Value>& args) {
@@ -372,8 +409,11 @@ void BindingData::Parse(const FunctionCallbackInfo<Value>& args) {
 
   binding_data->UpdateComponents(out->get_components(), out->type);
 
-  args.GetReturnValue().Set(
-      ToV8Value(realm->context(), out->get_href(), isolate).ToLocalChecked());
+  Local<Value> ret;
+  if (ToV8Value(realm->context(), out->get_href(), isolate).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::Update(const FunctionCallbackInfo<Value>& args) {
@@ -385,8 +425,11 @@ void BindingData::Update(const FunctionCallbackInfo<Value>& args) {
   BindingData* binding_data = realm->GetBindingData<BindingData>();
   Isolate* isolate = realm->isolate();
 
-  enum url_update_action action = static_cast<enum url_update_action>(
-      args[1]->Uint32Value(realm->context()).FromJust());
+  uint32_t val;
+  if (!args[1]->Uint32Value(realm->context()).To(&val)) {
+    return;
+  }
+  enum url_update_action action = static_cast<enum url_update_action>(val);
   Utf8Value input(isolate, args[0].As<String>());
   Utf8Value new_value(isolate, args[2].As<String>());
 
@@ -446,8 +489,12 @@ void BindingData::Update(const FunctionCallbackInfo<Value>& args) {
   }
 
   binding_data->UpdateComponents(out->get_components(), out->type);
-  args.GetReturnValue().Set(
-      ToV8Value(realm->context(), out->get_href(), isolate).ToLocalChecked());
+
+  Local<Value> ret;
+  if (ToV8Value(realm->context(), out->get_href(), isolate).ToLocal(&ret))
+      [[likely]] {
+    args.GetReturnValue().Set(ret);
+  }
 }
 
 void BindingData::UpdateComponents(const ada::url_components& components,
@@ -497,11 +544,8 @@ void BindingData::RegisterExternalReferences(
   registry->Register(PathToFileURL);
   registry->Register(Update);
   registry->Register(CanParse);
-  registry->Register(FastCanParse);
-  registry->Register(FastCanParseWithBase);
-
   for (const CFunction& method : fast_can_parse_methods_) {
-    registry->Register(method.GetTypeInfo());
+    registry->Register(method);
   }
 }
 
@@ -513,22 +557,21 @@ void ThrowInvalidURL(node::Environment* env,
 
   auto err_object = err.As<Object>();
 
-  USE(err_object->Set(env->context(),
-                      env->input_string(),
-                      v8::String::NewFromUtf8(env->isolate(),
-                                              input.data(),
-                                              v8::NewStringType::kNormal,
-                                              input.size())
-                          .ToLocalChecked()));
+  Local<Value> tmp;
+  if (!ToV8Value(env->context(), input, env->isolate()).ToLocal(&tmp) ||
+      err_object->Set(env->context(), env->input_string(), tmp).IsNothing())
+      [[unlikely]] {
+    // A superseding error has been thrown.
+    return;
+  }
 
   if (base.has_value()) {
-    USE(err_object->Set(env->context(),
-                        env->base_string(),
-                        v8::String::NewFromUtf8(env->isolate(),
-                                                base.value().c_str(),
-                                                v8::NewStringType::kNormal,
-                                                base.value().size())
-                            .ToLocalChecked()));
+    if (!ToV8Value(env->context(), base.value(), env->isolate())
+             .ToLocal(&tmp) ||
+        err_object->Set(env->context(), env->base_string(), tmp).IsNothing())
+        [[unlikely]] {
+      return;
+    }
   }
 
   env->isolate()->ThrowException(err);

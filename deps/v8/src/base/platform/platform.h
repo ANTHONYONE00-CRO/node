@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef V8_BASE_PLATFORM_PLATFORM_H_
+#define V8_BASE_PLATFORM_PLATFORM_H_
+
 // This module contains the platform-specific code. This make the rest of the
 // code less dependent on operating system, compilers and runtime libraries.
 // This module does specifically not deal with differences between different
@@ -18,9 +21,6 @@
 // implementation and the overhead of virtual methods for performance
 // sensitive like mutex locking/unlocking.
 
-#ifndef V8_BASE_PLATFORM_PLATFORM_H_
-#define V8_BASE_PLATFORM_PLATFORM_H_
-
 #include <cstdarg>
 #include <cstdint>
 #include <optional>
@@ -33,7 +33,6 @@
 #include "src/base/build_config.h"
 #include "src/base/compiler-specific.h"
 #include "src/base/macros.h"
-#include "src/base/platform/mutex.h"
 #include "src/base/platform/semaphore.h"
 #include "testing/gtest/include/gtest/gtest_prod.h"  // nogncheck
 
@@ -63,6 +62,12 @@
 extern "C" unsigned long __readfsdword(unsigned long);  // NOLINT(runtime/int)
 #endif                                       // V8_CC_MSVC && V8_HOST_ARCH_IA32
 #endif                                       // V8_NO_FAST_TLS
+
+#if V8_OS_OPENBSD
+#define PERMISSION_MUTABLE_SECTION __attribute__((section(".openbsd.mutable")))
+#else
+#define PERMISSION_MUTABLE_SECTION
+#endif
 
 namespace heap::base {
 class Stack;
@@ -157,6 +162,11 @@ class V8_BASE_EXPORT OS {
 
   // Check whether CET shadow stack is enabled.
   static bool IsHardwareEnforcedShadowStacksEnabled();
+
+  // Ensure that an alternative stack is available for signal handlers on the
+  // current thread on platforms that support this. If necessary, this function
+  // will allocate memory for an alternative stack and register it with the OS.
+  static void EnsureAlternativeSignalStackIsAvailableForCurrentThread();
 
   // Returns the accumulated user time for thread. This routine
   // can be used for profiling. The implementation should
@@ -326,7 +336,7 @@ class V8_BASE_EXPORT OS {
   // Whether the platform supports mapping a given address in another location
   // in the address space.
   V8_WARN_UNUSED_RESULT static constexpr bool IsRemapPageSupported() {
-#if (defined(V8_OS_DARWIN) || defined(V8_OS_LINUX)) && \
+#if (defined(V8_OS_MACOS) || defined(V8_OS_LINUX)) && \
     !(defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390X))
     return true;
 #else
@@ -353,6 +363,8 @@ class V8_BASE_EXPORT OS {
   static void SetDataReadOnly(void* address, size_t size);
 
  private:
+  static int GetCurrentThreadIdInternal();
+
   // These classes use the private memory management API below.
   friend class AddressSpaceReservation;
   friend class MemoryMappedFile;
@@ -370,9 +382,9 @@ class V8_BASE_EXPORT OS {
 
   static void* GetRandomMmapAddr();
 
-  V8_WARN_UNUSED_RESULT static void* Allocate(void* address, size_t size,
-                                              size_t alignment,
-                                              MemoryPermission access);
+  V8_WARN_UNUSED_RESULT static void* Allocate(
+      void* address, size_t size, size_t alignment, MemoryPermission access,
+      PlatformSharedMemoryHandle handle = kInvalidSharedMemoryHandle);
 
   V8_WARN_UNUSED_RESULT static void* AllocateShared(size_t size,
                                                     MemoryPermission access);
@@ -402,11 +414,15 @@ class V8_BASE_EXPORT OS {
 
   V8_WARN_UNUSED_RESULT static bool DecommitPages(void* address, size_t size);
 
+  V8_WARN_UNUSED_RESULT static bool SealPages(void* address, size_t size);
+
   V8_WARN_UNUSED_RESULT static bool CanReserveAddressSpace();
 
   V8_WARN_UNUSED_RESULT static std::optional<AddressSpaceReservation>
-  CreateAddressSpaceReservation(void* hint, size_t size, size_t alignment,
-                                MemoryPermission max_permission);
+  CreateAddressSpaceReservation(
+      void* hint, size_t size, size_t alignment,
+      MemoryPermission max_permission,
+      PlatformSharedMemoryHandle handle = kInvalidSharedMemoryHandle);
 
   static void FreeAddressSpaceReservation(AddressSpaceReservation reservation);
 
@@ -631,6 +647,8 @@ class V8_BASE_EXPORT Thread {
 
 // TODO(v8:10354): Make use of the stack utilities here in V8.
 class V8_BASE_EXPORT Stack {
+  struct PreventNonDefaultParameters {};
+
  public:
   // Convenience wrapper to use stack slots as unsigned values or void*
   // pointers.
@@ -656,15 +674,22 @@ class V8_BASE_EXPORT Stack {
   // return an address significantly above the actual current stack position.
   static V8_NOINLINE StackSlot GetCurrentStackPosition();
 
-  // Same as `GetCurrentStackPosition()` with the difference that it is always
-  // inlined and thus always returns the current frame's stack top.
-  static V8_INLINE StackSlot GetCurrentFrameAddress() {
 #if V8_CC_MSVC
-    return _AddressOfReturnAddress();
+#define DEFAULT_CURRENT_FRAME_ADDRESS _AddressOfReturnAddress()
 #else
-    return __builtin_frame_address(0);
+#define DEFAULT_CURRENT_FRAME_ADDRESS __builtin_frame_address(0)
 #endif
+
+  // Same as `GetCurrentStackPosition()` with the difference that it uses a
+  // default parameter value and thus always returns the current frame's stack
+  // top even if this method is not inlined.
+  static V8_INLINE StackSlot GetCurrentFrameAddress(
+      PreventNonDefaultParameters = PreventNonDefaultParameters(),
+      void* frame_address = DEFAULT_CURRENT_FRAME_ADDRESS) {
+    return frame_address;
   }
+
+#undef DEFAULT_CURRENT_FRAME_ADDRESS
 
   // Returns the real stack frame if slot is part of a fake frame, and slot
   // otherwise.

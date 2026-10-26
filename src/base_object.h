@@ -27,6 +27,7 @@
 #include <type_traits>  // std::remove_reference
 #include "base_object_types.h"
 #include "memory_tracker.h"
+#include "node_v8_embedder.h"
 #include "util.h"
 #include "v8.h"
 
@@ -105,15 +106,13 @@ class BaseObject : public MemoryRetainer {
   // to it anymore.
   inline bool IsWeakOrDetached() const;
 
-  inline v8::EmbedderGraph::Node::Detachedness GetDetachedness() const override;
-
   // Utility to create a FunctionTemplate with one internal field (used for
   // the `BaseObject*` pointer) and a constructor that initializes that field
   // to `nullptr`.
   static v8::Local<v8::FunctionTemplate> MakeLazilyInitializedJSTemplate(
-      IsolateData* isolate);
+      IsolateData* isolate, int internal_field_count = kInternalFieldCount);
   static v8::Local<v8::FunctionTemplate> MakeLazilyInitializedJSTemplate(
-      Environment* env);
+      Environment* env, int internal_field_count = kInternalFieldCount);
 
   // Setter/Getter pair for internal fields that can be passed to SetAccessor.
   template <int Field>
@@ -129,11 +128,6 @@ class BaseObject : public MemoryRetainer {
   // BaseObject once that is torn down. This can only be called when there is
   // a BaseObjectPtr to this object.
   inline void Detach();
-
-  static inline v8::Local<v8::FunctionTemplate> GetConstructorTemplate(
-      Environment* env);
-  static v8::Local<v8::FunctionTemplate> GetConstructorTemplate(
-      IsolateData* isolate_data);
 
   // Interface for transferring BaseObject instances using the .postMessage()
   // method of MessagePorts (and, by extension, Workers).
@@ -192,7 +186,6 @@ class BaseObject : public MemoryRetainer {
 
  private:
   v8::Local<v8::Object> WrappedObject() const override;
-  bool IsRootNode() const override;
   void DeleteMe();
 
   // persistent_handle_ needs to be at a fixed offset from the start of the
@@ -288,6 +281,9 @@ class BaseObjectPtrImpl final {
   inline BaseObjectPtrImpl(BaseObjectPtrImpl&& other);
   inline BaseObjectPtrImpl& operator=(BaseObjectPtrImpl&& other);
 
+  inline BaseObjectPtrImpl(std::nullptr_t);
+  inline BaseObjectPtrImpl& operator=(std::nullptr_t);
+
   inline void reset(T* ptr = nullptr);
   inline T* get() const;
   inline T& operator*() const;
@@ -308,6 +304,13 @@ class BaseObjectPtrImpl final {
   inline BaseObject* get_base_object() const;
   inline BaseObject::PointerData* pointer_data() const;
 };
+
+template <typename T, bool kIsWeak>
+inline static bool operator==(const BaseObjectPtrImpl<T, kIsWeak>,
+                              const std::nullptr_t);
+template <typename T, bool kIsWeak>
+inline static bool operator==(const std::nullptr_t,
+                              const BaseObjectPtrImpl<T, kIsWeak>);
 
 template <typename T>
 using BaseObjectPtr = BaseObjectPtrImpl<T, false>;

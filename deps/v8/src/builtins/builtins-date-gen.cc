@@ -10,6 +10,8 @@
 namespace v8 {
 namespace internal {
 
+#include "src/codegen/define-code-stub-assembler-macros.inc"
+
 // -----------------------------------------------------------------------------
 // ES6 section 20.3 Date Objects
 
@@ -48,8 +50,8 @@ void DateBuiltinsAssembler::Generate_DatePrototype_GetField(
   // Load the specified date field, falling back to the runtime as necessary.
   if (field_index < JSDate::kFirstUncachedField) {
     Label stamp_mismatch(this, Label::kDeferred);
-    TNode<Object> date_cache_stamp = Load<Object>(
-        ExternalConstant(ExternalReference::date_cache_stamp(isolate())));
+    TNode<Object> date_cache_stamp =
+        Load<Object>(IsolateField(IsolateFieldId::kDateCacheStamp));
 
     TNode<Object> cache_stamp =
         LoadObjectField(date_receiver, JSDate::kCacheStampOffset);
@@ -255,6 +257,8 @@ TF_BUILTIN(DatePrototypeToPrimitive, CodeStubAssembler) {
                    receiver);
   }
 }
+
+#include "src/codegen/undef-code-stub-assembler-macros.inc"
 
 }  // namespace internal
 }  // namespace v8

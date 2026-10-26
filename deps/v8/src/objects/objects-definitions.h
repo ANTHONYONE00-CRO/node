@@ -12,20 +12,17 @@ namespace v8 {
 
 namespace internal {
 
-// All Maps have a field instance_type containing a InstanceType.
+// All Maps have a field instance_type containing an InstanceType.
 // It describes the type of the instances.
 //
 // As an example, a JavaScript object is a heap object and its map
 // instance_type is JS_OBJECT_TYPE.
 //
-// The names of the string instance types are intended to systematically
-// mirror their encoding in the instance_type field of the map.  The default
-// encoding is considered TWO_BYTE.  It is not mentioned in the name.  ONE_BYTE
-// encoding is mentioned explicitly in the name.  Likewise, the default
-// representation is considered sequential.  It is not mentioned in the
-// name.  The other representations (e.g. CONS, EXTERNAL) are explicitly
-// mentioned.  Finally, the string is either a STRING_TYPE (if it is a normal
-// string) or a INTERNALIZED_STRING_TYPE (if it is a internalized string).
+// The names of the string instance types are intended to systematically mirror
+// their encoding in the instance_type field of the map.  The other
+// representations (e.g. CONS, EXTERNAL) are explicitly mentioned.  Finally,
+// the string is either a STRING_TYPE (if it is a normal string) or an
+// INTERNALIZED_STRING_TYPE (if it is an internalized string).
 //
 // NOTE: The following things are some that depend on the string types having
 // instance_types that are less than those of all other types:
@@ -66,14 +63,16 @@ namespace internal {
 // that string types map to address ranges of maps.
 #define STRING_TYPE_LIST(V)                                                    \
   /* Start sequential strings*/                                                \
-  V(SEQ_TWO_BYTE_STRING_TYPE, kVariableSizeSentinel, seq_two_byte_string,      \
-    SeqTwoByteString)                                                          \
-  V(SEQ_ONE_BYTE_STRING_TYPE, kVariableSizeSentinel, seq_one_byte_string,      \
-    SeqOneByteString)                                                          \
+  /* Start shared sequential strings*/                                         \
   V(SHARED_SEQ_TWO_BYTE_STRING_TYPE, kVariableSizeSentinel,                    \
     shared_seq_two_byte_string, SharedSeqTwoByteString)                        \
   V(SHARED_SEQ_ONE_BYTE_STRING_TYPE, kVariableSizeSentinel,                    \
     shared_seq_one_byte_string, SharedSeqOneByteString)                        \
+  /* End shared sequential strings*/                                           \
+  V(SEQ_TWO_BYTE_STRING_TYPE, kVariableSizeSentinel, seq_two_byte_string,      \
+    SeqTwoByteString)                                                          \
+  V(SEQ_ONE_BYTE_STRING_TYPE, kVariableSizeSentinel, seq_one_byte_string,      \
+    SeqOneByteString)                                                          \
   /* Start internalized strings*/                                              \
   V(INTERNALIZED_TWO_BYTE_STRING_TYPE, kVariableSizeSentinel,                  \
     internalized_two_byte_string, InternalizedTwoByteString)                   \
@@ -99,6 +98,7 @@ namespace internal {
     uncached_external_two_byte_string, UncachedExternalTwoByteString)          \
   V(UNCACHED_EXTERNAL_ONE_BYTE_STRING_TYPE, sizeof(UncachedExternalString),    \
     uncached_external_one_byte_string, UncachedExternalOneByteString)          \
+  /* Start shared external strings*/                                           \
   V(SHARED_UNCACHED_EXTERNAL_TWO_BYTE_STRING_TYPE,                             \
     sizeof(UncachedExternalString), shared_uncached_external_two_byte_string,  \
     SharedUncachedExternalTwoByteString)                                       \
@@ -106,14 +106,15 @@ namespace internal {
     sizeof(UncachedExternalString), shared_uncached_external_one_byte_string,  \
     SharedUncachedExternalOneByteString)                                       \
   /* End uncached external strings*/                                           \
-  V(EXTERNAL_TWO_BYTE_STRING_TYPE, sizeof(ExternalTwoByteString),              \
-    external_two_byte_string, ExternalTwoByteString)                           \
-  V(EXTERNAL_ONE_BYTE_STRING_TYPE, sizeof(ExternalOneByteString),              \
-    external_one_byte_string, ExternalOneByteString)                           \
   V(SHARED_EXTERNAL_TWO_BYTE_STRING_TYPE, sizeof(ExternalTwoByteString),       \
     shared_external_two_byte_string, SharedExternalTwoByteString)              \
   V(SHARED_EXTERNAL_ONE_BYTE_STRING_TYPE, sizeof(ExternalOneByteString),       \
     shared_external_one_byte_string, SharedExternalOneByteString)              \
+  /* End shared external strings*/                                             \
+  V(EXTERNAL_TWO_BYTE_STRING_TYPE, sizeof(ExternalTwoByteString),              \
+    external_two_byte_string, ExternalTwoByteString)                           \
+  V(EXTERNAL_ONE_BYTE_STRING_TYPE, sizeof(ExternalOneByteString),              \
+    external_one_byte_string, ExternalOneByteString)                           \
   /* End external strings*/                                                    \
                                                                                \
   V(CONS_TWO_BYTE_STRING_TYPE, sizeof(ConsString), cons_two_byte_string,       \
@@ -165,7 +166,6 @@ namespace internal {
   V(_, ERROR_STACK_DATA_TYPE, ErrorStackData, error_stack_data)               \
   V(_, FUNCTION_TEMPLATE_RARE_DATA_TYPE, FunctionTemplateRareData,            \
     function_template_rare_data)                                              \
-  V(_, INTERCEPTOR_INFO_TYPE, InterceptorInfo, interceptor_info)              \
   V(_, MODULE_REQUEST_TYPE, ModuleRequest, module_request)                    \
   V(_, PROMISE_CAPABILITY_TYPE, PromiseCapability, promise_capability)        \
   V(_, PROMISE_REACTION_TYPE, PromiseReaction, promise_reaction)              \
@@ -180,6 +180,7 @@ namespace internal {
   V(_, SOURCE_TEXT_MODULE_INFO_ENTRY_TYPE, SourceTextModuleInfoEntry,         \
     module_info_entry)                                                        \
   V(_, STACK_FRAME_INFO_TYPE, StackFrameInfo, stack_frame_info)               \
+  V(_, STACK_TRACE_INFO_TYPE, StackTraceInfo, stack_trace_info)               \
   V(_, TEMPLATE_OBJECT_DESCRIPTION_TYPE, TemplateObjectDescription,           \
     template_object_description)                                              \
   V(_, TUPLE2_TYPE, Tuple2, tuple2)                                           \

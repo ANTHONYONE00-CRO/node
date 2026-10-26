@@ -8,6 +8,9 @@
   "localstorage-cross-origin-iframe.tentative.https.window.js": {
     "skip": "iframes are not supported in Node.js."
   },
+  "localstorage-cross-origin-iframe.https.window.js": {
+    "skip": "iframes are not supported in Node.js."
+  },
   "storage_local_window_open.window.js": {
     "skip": "window.open() is not supported in Node.js."
   },
@@ -19,5 +22,14 @@
   },
   "storage_session_window_reopen.window.js": {
     "skip": "window.open() is not supported in Node.js."
+  },
+  "symbol-props.window.js": {
+    "fail": {
+      "note": "https://github.com/nodejs/node/issues/59310",
+      "expected": [
+        "localStorage: defineProperty not configurable",
+        "sessionStorage: defineProperty not configurable"
+      ]
+    }
   }
 }

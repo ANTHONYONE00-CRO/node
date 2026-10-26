@@ -6,11 +6,12 @@ const test = require('node:test');
 test('expected methods are on t.assert', (t) => {
   const uncopiedKeys = [
     'AssertionError',
-    'CallTracker',
     'strict',
+    'Assert',
+    'options',
   ];
   const assertKeys = Object.keys(assert).filter((key) => !uncopiedKeys.includes(key));
-  const expectedKeys = ['snapshot'].concat(assertKeys).sort();
+  const expectedKeys = ['snapshot', 'fileSnapshot'].concat(assertKeys).sort();
   assert.deepStrictEqual(Object.keys(t.assert).sort(), expectedKeys);
 });
 

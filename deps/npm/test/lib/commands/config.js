@@ -101,6 +101,49 @@ t.test('config list', async t => {
   t.matchSnapshot(output, 'output matches snapshot')
 })
 
+t.test('config list with proxy environment variables', async t => {
+  const originalHTTP = process.env.HTTP_PROXY
+  const originalHTTPS = process.env.HTTPS_PROXY
+  const originalNO = process.env.NO_PROXY
+
+  t.teardown(() => {
+    if (originalHTTP !== undefined) {
+      process.env.HTTP_PROXY = originalHTTP
+    } else {
+      delete process.env.HTTP_PROXY
+    }
+    if (originalHTTPS !== undefined) {
+      process.env.HTTPS_PROXY = originalHTTPS
+    } else {
+      delete process.env.HTTPS_PROXY
+    }
+    if (originalNO !== undefined) {
+      process.env.NO_PROXY = originalNO
+    } else {
+      delete process.env.NO_PROXY
+    }
+  })
+
+  process.env.HTTP_PROXY = 'http://proxy.example.com:8080'
+  process.env.HTTPS_PROXY = 'https://secure-proxy.example.com:8443'
+  process.env.NO_PROXY = 'localhost,127.0.0.1'
+
+  const { npm, joinedOutput } = await loadMockNpm(t, {
+    prefixDir: {
+      '.npmrc': 'test=value',
+    },
+  })
+
+  await npm.exec('config', ['list'])
+
+  const output = joinedOutput()
+
+  t.match(output, 'HTTP_PROXY = "http://proxy.example.com:8080"')
+  t.match(output, 'HTTPS_PROXY = "https://secure-proxy.example.com:8443"')
+  t.match(output, 'NO_PROXY = "localhost,127.0.0.1"')
+  t.match(output, 'environment-related config')
+})
+
 t.test('config list --long', async t => {
   const { npm, joinedOutput } = await loadMockNpm(t, {
     prefixDir: {
@@ -164,8 +207,9 @@ t.test('config list with publishConfig', async t => {
     prefixDir: {
       'package.json': JSON.stringify({
         publishConfig: {
+          other: 'not defined',
           registry: 'https://some.registry',
-          _authToken: 'mytoken',
+          '//some.registry:_authToken': 'mytoken',
         },
       }),
     },
@@ -173,7 +217,7 @@ t.test('config list with publishConfig', async t => {
   })
 
   t.test('local', async t => {
-    const { npm, joinedOutput } = await loadMockNpmWithPublishConfig(t)
+    const { npm, logs, joinedOutput } = await loadMockNpmWithPublishConfig(t)
 
     await npm.exec('config', ['list'])
 
@@ -182,6 +226,7 @@ t.test('config list with publishConfig', async t => {
     t.match(output, 'registry = "https://some.registry"')
 
     t.matchSnapshot(output, 'output matches snapshot')
+    t.matchSnapshot(logs.warn, 'warns about unknown config')
   })
 
   t.test('global', async t => {
@@ -223,7 +268,7 @@ t.test('config delete single key', async t => {
 
   await npm.exec('config', ['delete', 'access'])
 
-  t.equal(npm.config.get('access'), null, 'acces should be defaulted')
+  t.equal(npm.config.get('access'), null, 'access should be defaulted')
 
   const contents = await fs.readFile(join(home, '.npmrc'), { encoding: 'utf8' })
   const rc = ini.parse(contents)
@@ -292,7 +337,7 @@ t.test('config delete key --global', async t => {
 t.test('config set invalid option', async t => {
   const { npm } = await loadMockNpm(t)
   await t.rejects(
-    npm.exec('config', ['set', 'nonexistantconfigoption', 'something']),
+    npm.exec('config', ['set', 'nonexistentconfigoption', 'something']),
     /not a valid npm option/
   )
 })
@@ -315,7 +360,7 @@ t.test('config set nerf-darted option', async t => {
   )
 })
 
-t.test('config set scoped optoin', async t => {
+t.test('config set scoped option', async t => {
   const { npm } = await loadMockNpm(t)
   await npm.exec('config', ['set', '@npm:registry', 'https://registry.npmjs.org'])
   t.equal(

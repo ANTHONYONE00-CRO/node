@@ -4,13 +4,13 @@
 
 <!-- type=misc -->
 
-> Stability: 2 - Stable
-
 <!-- name=report -->
 
 <!-- YAML
 changes:
-  - version: v23.3.0
+  - version:
+    - v23.3.0
+    - v22.13.0
     pr-url: https://github.com/nodejs/node/pull/55697
     description: Added `--report-exclude-env` option for excluding environment variables from report generation.
   - version:
@@ -19,6 +19,8 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/51645
     description: Added `--report-exclude-network` option for excluding networking operations that can slow down report generation in some cases.
 -->
+
+> Stability: 2 - Stable
 
 Delivers a JSON-formatted diagnostic summary, written to a file.
 
@@ -35,7 +37,7 @@ is provided below for reference.
 ```json
 {
   "header": {
-    "reportVersion": 4,
+    "reportVersion": 5,
     "event": "exception",
     "trigger": "Exception",
     "filename": "report.20181221.005011.8974.0.001.json",
@@ -392,7 +394,7 @@ is provided below for reference.
       "soft": "",
       "hard": "unlimited"
     },
-    "data_seg_size_kbytes": {
+    "data_seg_size_bytes": {
       "soft": "unlimited",
       "hard": "unlimited"
     },
@@ -404,7 +406,7 @@ is provided below for reference.
       "soft": "unlimited",
       "hard": 65536
     },
-    "max_memory_size_kbytes": {
+    "max_memory_size_bytes": {
       "soft": "unlimited",
       "hard": "unlimited"
     },
@@ -424,7 +426,7 @@ is provided below for reference.
       "soft": "unlimited",
       "hard": 4127290
     },
-    "virtual_memory_kbytes": {
+    "virtual_memory_bytes": {
       "soft": "unlimited",
       "hard": "unlimited"
     }
@@ -588,11 +590,50 @@ Report version definitions are consistent across LTS releases.
 
 ### Version history
 
+#### Version 5
+
+<!-- YAML
+changes:
+  - version:
+    - v23.5.0
+    - v22.13.0
+    pr-url: https://github.com/nodejs/node/pull/56068
+    description: Fix typos in the memory limit units.
+-->
+
+Replace the keys `data_seg_size_kbytes`, `max_memory_size_kbytes`, and `virtual_memory_kbytes`
+with `data_seg_size_bytes`, `max_memory_size_bytes`, and `virtual_memory_bytes`
+respectively in the `userLimits` section, as these values are given in bytes.
+
+```json
+{
+  "userLimits": {
+    // Skip some keys ...
+    "data_seg_size_bytes": { // replacing data_seg_size_kbytes
+      "soft": "unlimited",
+      "hard": "unlimited"
+    },
+    // ...
+    "max_memory_size_bytes": { // replacing max_memory_size_kbytes
+      "soft": "unlimited",
+      "hard": "unlimited"
+    },
+    // ...
+    "virtual_memory_bytes": { // replacing virtual_memory_kbytes
+      "soft": "unlimited",
+      "hard": "unlimited"
+    }
+  }
+}
+```
+
 #### Version 4
 
 <!-- YAML
 changes:
-  - version: v23.3.0
+  - version:
+    - v23.3.0
+    - v22.13.0
     pr-url: https://github.com/nodejs/node/pull/55697
     description: Added `--report-exclude-env` option for excluding environment variables from report generation.
 -->

@@ -1,5 +1,5 @@
 'use strict';
-const { hasCrypto } = require('../common');
+const { hasCrypto, hasLocalStorage } = require('../common');
 const { test } = require('node:test');
 const assert = require('assert');
 
@@ -12,7 +12,7 @@ const assert = require('assert');
 if (process.stdout.isTTY)
   process.env.NODE_DISABLE_COLORS = '1';
 
-test('', { skip: !hasCrypto }, () => {
+test({ skip: !hasCrypto || !hasLocalStorage }, () => {
   // See https://github.com/nodejs/node/issues/10258
   {
     const date = new Date('2016');
@@ -49,13 +49,13 @@ test('', { skip: !hasCrypto }, () => {
 
   {  // At the moment global has its own type tag
     const fakeGlobal = {};
-    Object.setPrototypeOf(fakeGlobal, Object.getPrototypeOf(global));
-    for (const prop of Object.keys(global)) {
+    Object.setPrototypeOf(fakeGlobal, Object.getPrototypeOf(globalThis));
+    for (const prop of Object.keys(globalThis)) {
       fakeGlobal[prop] = global[prop];
     }
-    assert.notDeepEqual(fakeGlobal, global);
+    assert.notDeepEqual(fakeGlobal, globalThis);
     // Message will be truncated anyway, don't validate
-    assert.throws(() => assert.deepStrictEqual(fakeGlobal, global),
+    assert.throws(() => assert.deepStrictEqual(fakeGlobal, globalThis),
                   assert.AssertionError);
   }
 

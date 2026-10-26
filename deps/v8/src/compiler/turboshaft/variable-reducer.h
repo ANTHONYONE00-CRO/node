@@ -97,6 +97,7 @@ class VariableReducer : public RequiredOptimizationReducer<AfterNext> {
     SealAndSaveVariableSnapshot();
 
     predecessors_.clear();
+    predecessors_.reserve(new_block->PredecessorCount());
     for (const Block* pred : new_block->PredecessorsIterable()) {
       std::optional<Snapshot> pred_snapshot =
           block_to_snapshot_mapping_[pred->index()];
@@ -169,9 +170,9 @@ class VariableReducer : public RequiredOptimizationReducer<AfterNext> {
     DCHECK(destination->IsLoop());
     DCHECK_EQ(destination->PredecessorCount(), 2);
 
-    if (loop_pending_phis_.contains(destination->index())) {
-      for (auto [var, pending_phi_idx] :
-           loop_pending_phis_[destination->index()].value()) {
+    if (auto it = loop_pending_phis_.find(destination->index());
+        it != loop_pending_phis_.end()) {
+      for (auto [var, pending_phi_idx] : it->second.value()) {
         const PendingLoopPhiOp& pending_phi =
             __ Get(pending_phi_idx).template Cast<PendingLoopPhiOp>();
         __ output_graph().template Replace<PhiOp>(
@@ -199,7 +200,8 @@ class VariableReducer : public RequiredOptimizationReducer<AfterNext> {
   void Set(Variable var, V<Rep> value) {
     DCHECK(!is_temporary_);
     if (V8_UNLIKELY(__ generating_unreachable_operations())) return;
-    DCHECK(Rep::allows_representation(RegisterRepresentation(var.data().rep)));
+    DCHECK(
+        V<Rep>::allows_representation(RegisterRepresentation(var.data().rep)));
     table_.Set(var, value);
   }
 
@@ -243,6 +245,7 @@ class VariableReducer : public RequiredOptimizationReducer<AfterNext> {
 
   OpIndex MergeFrameState(base::Vector<const OpIndex> frame_states_indices) {
     base::SmallVector<const FrameStateOp*, 32> frame_states;
+    frame_states.reserve(frame_states_indices.size());
     for (OpIndex idx : frame_states_indices) {
       frame_states.push_back(
           &__ output_graph().Get(idx).template Cast<FrameStateOp>());
@@ -255,7 +258,7 @@ class VariableReducer : public RequiredOptimizationReducer<AfterNext> {
     for (auto frame_state : frame_states) {
       DCHECK_EQ(first_frame->input_count, frame_state->input_count);
       DCHECK_EQ(first_frame->inlined, frame_state->inlined);
-      DCHECK_EQ(first_frame->data, frame_state->data);
+      DCHECK_EQ(*first_frame->data, *frame_state->data);
     }
 #endif
 

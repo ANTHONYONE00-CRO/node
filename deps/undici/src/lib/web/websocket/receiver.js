@@ -3,19 +3,19 @@
 const { Writable } = require('node:stream')
 const assert = require('node:assert')
 const { parserStates, opcodes, states, emptyBuffer, sentCloseFrameState } = require('./constants')
-const { channels } = require('../../core/diagnostics')
 const {
   isValidStatusCode,
   isValidOpcode,
-  failWebsocketConnection,
   websocketMessageReceived,
   utf8Decode,
   isControlFrame,
   isTextBinaryFrame,
   isContinuationFrame
 } = require('./util')
+const { failWebsocketConnection } = require('./connection')
 const { WebsocketFrameSend } = require('./frame')
 const { PerMessageDeflate } = require('./permessage-deflate')
+const { MessageSizeExceededError } = require('../../core/errors')
 
 // This code was influenced by ws released under the MIT license.
 // Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
@@ -24,6 +24,7 @@ const { PerMessageDeflate } = require('./permessage-deflate')
 
 class ByteParser extends Writable {
   #buffers = []
+  #fragmentsBytes = 0
   #byteOffset = 0
   #loop = false
 
@@ -38,6 +39,10 @@ class ByteParser extends Writable {
   /** @type {import('./websocket').Handler} */
   #handler
 
+  /**
+   * @param {import('./websocket').Handler} handler
+   * @param {Map<string, string>|null} extensions
+   */
   constructor (handler, extensions) {
     super()
 
@@ -180,6 +185,7 @@ class ByteParser extends Writable {
 
         const buffer = this.consume(8)
         const upper = buffer.readUInt32BE(0)
+        const lower = buffer.readUInt32BE(4)
 
         // 2^31 is the maximum bytes an arraybuffer can contain
         // on 32-bit systems. Although, on 64-bit systems, this is
@@ -187,14 +193,12 @@ class ByteParser extends Writable {
         // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Errors/Invalid_array_length
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/common/globals.h;drc=1946212ac0100668f14eb9e2843bdd846e510a1e;bpv=1;bpt=1;l=1275
         // https://source.chromium.org/chromium/chromium/src/+/main:v8/src/objects/js-array-buffer.h;l=34;drc=1946212ac0100668f14eb9e2843bdd846e510a1e
-        if (upper > 2 ** 31 - 1) {
+        if (upper !== 0 || lower > 2 ** 31 - 1) {
           failWebsocketConnection(this.#handler, 1009, 'Received payload length > 2^31 bytes.')
           return
         }
 
-        const lower = buffer.readUInt32BE(4)
-
-        this.#info.payloadLength = (upper << 8) + lower
+        this.#info.payloadLength = lower
         this.#state = parserStates.READ_DATA
       } else if (this.#state === parserStates.READ_DATA) {
         if (this.#byteOffset < this.#info.payloadLength) {
@@ -208,27 +212,27 @@ class ByteParser extends Writable {
           this.#state = parserStates.INFO
         } else {
           if (!this.#info.compressed) {
-            this.#fragments.push(body)
+            this.writeFragments(body)
 
             // If the frame is not fragmented, a message has been received.
             // If the frame is fragmented, it will terminate with a fin bit set
             // and an opcode of 0 (continuation), therefore we handle that when
             // parsing continuation frames, not here.
             if (!this.#info.fragmented && this.#info.fin) {
-              const fullMessage = Buffer.concat(this.#fragments)
-              websocketMessageReceived(this.#handler, this.#info.binaryType, fullMessage)
-              this.#fragments.length = 0
+              websocketMessageReceived(this.#handler, this.#info.binaryType, this.consumeFragments())
             }
 
             this.#state = parserStates.INFO
           } else {
             this.#extensions.get('permessage-deflate').decompress(body, this.#info.fin, (error, data) => {
               if (error) {
-                failWebsocketConnection(this.#handler, 1007, error.message)
+                // Use 1009 (Message Too Big) for decompression size limit errors
+                const code = error instanceof MessageSizeExceededError ? 1009 : 1007
+                failWebsocketConnection(this.#handler, code, error.message)
                 return
               }
 
-              this.#fragments.push(data)
+              this.writeFragments(data)
 
               if (!this.#info.fin) {
                 this.#state = parserStates.INFO
@@ -237,11 +241,10 @@ class ByteParser extends Writable {
                 return
               }
 
-              websocketMessageReceived(this.#handler, this.#info.binaryType, Buffer.concat(this.#fragments))
+              websocketMessageReceived(this.#handler, this.#info.binaryType, this.consumeFragments())
 
               this.#loop = true
               this.#state = parserStates.INFO
-              this.#fragments.length = 0
               this.run(callback)
             })
 
@@ -265,34 +268,70 @@ class ByteParser extends Writable {
       return emptyBuffer
     }
 
-    if (this.#buffers[0].length === n) {
-      this.#byteOffset -= this.#buffers[0].length
-      return this.#buffers.shift()
-    }
-
-    const buffer = Buffer.allocUnsafe(n)
-    let offset = 0
-
-    while (offset !== n) {
-      const next = this.#buffers[0]
-      const { length } = next
-
-      if (length + offset === n) {
-        buffer.set(this.#buffers.shift(), offset)
-        break
-      } else if (length + offset > n) {
-        buffer.set(next.subarray(0, n - offset), offset)
-        this.#buffers[0] = next.subarray(n - offset)
-        break
-      } else {
-        buffer.set(this.#buffers.shift(), offset)
-        offset += next.length
-      }
-    }
-
     this.#byteOffset -= n
 
-    return buffer
+    const first = this.#buffers[0]
+
+    if (first.length > n) {
+      // replace with remaining buffer
+      this.#buffers[0] = first.subarray(n, first.length)
+      return first.subarray(0, n)
+    } else if (first.length === n) {
+      // prefect match
+      return this.#buffers.shift()
+    } else {
+      let offset = 0
+      // If Buffer.allocUnsafe is used, extra copies will be made because the offset is non-zero.
+      const buffer = Buffer.allocUnsafeSlow(n)
+      while (offset !== n) {
+        const next = this.#buffers[0]
+        const length = next.length
+
+        if (length + offset === n) {
+          buffer.set(this.#buffers.shift(), offset)
+          break
+        } else if (length + offset > n) {
+          buffer.set(next.subarray(0, n - offset), offset)
+          this.#buffers[0] = next.subarray(n - offset)
+          break
+        } else {
+          buffer.set(this.#buffers.shift(), offset)
+          offset += length
+        }
+      }
+
+      return buffer
+    }
+  }
+
+  writeFragments (fragment) {
+    this.#fragmentsBytes += fragment.length
+    this.#fragments.push(fragment)
+  }
+
+  consumeFragments () {
+    const fragments = this.#fragments
+
+    if (fragments.length === 1) {
+      // single fragment
+      this.#fragmentsBytes = 0
+      return fragments.shift()
+    }
+
+    let offset = 0
+    // If Buffer.allocUnsafe is used, extra copies will be made because the offset is non-zero.
+    const output = Buffer.allocUnsafeSlow(this.#fragmentsBytes)
+
+    for (let i = 0; i < fragments.length; ++i) {
+      const buffer = fragments[i]
+      output.set(buffer, offset)
+      offset += buffer.length
+    }
+
+    this.#fragments = []
+    this.#fragmentsBytes = 0
+
+    return output
   }
 
   parseCloseBody (data) {
@@ -389,22 +428,13 @@ class ByteParser extends Writable {
 
         this.#handler.socket.write(frame.createFrame(opcodes.PONG))
 
-        if (channels.ping.hasSubscribers) {
-          channels.ping.publish({
-            payload: body
-          })
-        }
+        this.#handler.onPing(body)
       }
     } else if (opcode === opcodes.PONG) {
       // A Pong frame MAY be sent unsolicited.  This serves as a
       // unidirectional heartbeat.  A response to an unsolicited Pong frame is
       // not expected.
-
-      if (channels.pong.hasSubscribers) {
-        channels.pong.publish({
-          payload: body
-        })
-      }
+      this.#handler.onPong(body)
     }
 
     return true

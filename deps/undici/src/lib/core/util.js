@@ -5,15 +5,14 @@ const { kDestroyed, kBodyUsed, kListeners, kBody } = require('./symbols')
 const { IncomingMessage } = require('node:http')
 const stream = require('node:stream')
 const net = require('node:net')
-const { Blob } = require('node:buffer')
-const nodeUtil = require('node:util')
 const { stringify } = require('node:querystring')
 const { EventEmitter: EE } = require('node:events')
-const { InvalidArgumentError } = require('./errors')
+const timers = require('../util/timers')
+const { InvalidArgumentError, ConnectTimeoutError } = require('./errors')
 const { headerNameLowerCasedRecord } = require('./constants')
 const { tree } = require('./tree')
 
-const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(v => Number(v))
+const [nodeMajor, nodeMinor] = process.versions.node.split('.', 2).map(v => Number(v))
 
 class BodyAsyncIterable {
   constructor (body) {
@@ -27,6 +26,8 @@ class BodyAsyncIterable {
     yield * this[kBody]
   }
 }
+
+function noop () {}
 
 /**
  * @param {*} body
@@ -57,6 +58,8 @@ function wrapRequestBody (body) {
     // to determine whether or not it has been disturbed. This is just
     // a workaround.
     return new BodyAsyncIterable(body)
+  } else if (body && isFormDataLike(body)) {
+    return body
   } else if (
     body &&
     typeof body !== 'string' &&
@@ -102,12 +105,23 @@ function isBlobLike (object) {
 }
 
 /**
+ * @param {string} url The path to check for query strings or fragments.
+ * @returns {boolean} Returns true if the path contains a query string or fragment.
+ */
+function pathHasQueryOrFragment (url) {
+  return (
+    url.includes('?') ||
+    url.includes('#')
+  )
+}
+
+/**
  * @param {string} url The URL to add the query params to
  * @param {import('node:querystring').ParsedUrlQueryInput} queryParams The object to serialize into a URL query string
  * @returns {string} The URL with the query params added
  */
 function serializePathWithQuery (url, queryParams) {
-  if (url.includes('?') || url.includes('#')) {
+  if (pathHasQueryOrFragment(url)) {
     throw new Error('Query params cannot be passed when url already contains "?" or "#".')
   }
 
@@ -314,6 +328,20 @@ function isIterable (obj) {
 }
 
 /**
+ * Checks whether an object has a safe Symbol.iterator — i.e. one that is
+ * either own or inherited from a non-Object.prototype chain.  This prevents
+ * prototype-pollution attacks from injecting a fake iterator on
+ * Object.prototype.
+ * @param {object} obj
+ * @returns {boolean}
+ */
+function hasSafeIterator (obj) {
+  const prototype = Object.getPrototypeOf(obj)
+  const ownIterator = Object.prototype.hasOwnProperty.call(obj, Symbol.iterator)
+  return ownIterator || (prototype != null && prototype !== Object.prototype && typeof obj[Symbol.iterator] === 'function')
+}
+
+/**
  * @param {Blob|Buffer|import ('stream').Stream} body
  * @returns {number|null}
  */
@@ -417,20 +445,15 @@ function parseHeaders (headers, obj) {
         val = [val]
         obj[key] = val
       }
-      val.push(headers[i + 1].toString('utf8'))
+      val.push(headers[i + 1].toString('latin1'))
     } else {
       const headersValue = headers[i + 1]
       if (typeof headersValue === 'string') {
         obj[key] = headersValue
       } else {
-        obj[key] = Array.isArray(headersValue) ? headersValue.map(x => x.toString('utf8')) : headersValue.toString('utf8')
+        obj[key] = Array.isArray(headersValue) ? headersValue.map(x => x.toString('latin1')) : headersValue.toString('latin1')
       }
     }
-  }
-
-  // See https://github.com/nodejs/node/pull/46528
-  if ('content-length' in obj && 'content-disposition' in obj) {
-    obj['content-disposition'] = Buffer.from(obj['content-disposition']).toString('latin1')
   }
 
   return obj
@@ -447,32 +470,18 @@ function parseRawHeaders (headers) {
    */
   const ret = new Array(headersLength)
 
-  let hasContentLength = false
-  let contentDispositionIdx = -1
   let key
   let val
-  let kLen = 0
 
   for (let n = 0; n < headersLength; n += 2) {
     key = headers[n]
     val = headers[n + 1]
 
     typeof key !== 'string' && (key = key.toString())
-    typeof val !== 'string' && (val = val.toString('utf8'))
+    typeof val !== 'string' && (val = val.toString('latin1'))
 
-    kLen = key.length
-    if (kLen === 14 && key[7] === '-' && (key === 'content-length' || key.toLowerCase() === 'content-length')) {
-      hasContentLength = true
-    } else if (kLen === 19 && key[7] === '-' && (key === 'content-disposition' || key.toLowerCase() === 'content-disposition')) {
-      contentDispositionIdx = n + 1
-    }
     ret[n] = key
     ret[n + 1] = val
-  }
-
-  // See https://github.com/nodejs/node/pull/46528
-  if (hasContentLength && contentDispositionIdx !== -1) {
-    ret[contentDispositionIdx] = Buffer.from(ret[contentDispositionIdx]).toString('latin1')
   }
 
   return ret
@@ -597,26 +606,28 @@ function ReadableStreamFrom (iterable) {
   let iterator
   return new ReadableStream(
     {
-      async start () {
+      start () {
         iterator = iterable[Symbol.asyncIterator]()
       },
-      async pull (controller) {
-        const { done, value } = await iterator.next()
-        if (done) {
-          queueMicrotask(() => {
-            controller.close()
-            controller.byobRequest?.respond(0)
-          })
-        } else {
-          const buf = Buffer.isBuffer(value) ? value : Buffer.from(value)
-          if (buf.byteLength) {
-            controller.enqueue(new Uint8Array(buf))
+      pull (controller) {
+        return iterator.next().then(({ done, value }) => {
+          if (done) {
+            return queueMicrotask(() => {
+              controller.close()
+              controller.byobRequest?.respond(0)
+            })
+          } else {
+            const buf = Buffer.isBuffer(value) ? value : Buffer.from(value)
+            if (buf.byteLength) {
+              return controller.enqueue(new Uint8Array(buf))
+            } else {
+              return this.pull(controller)
+            }
           }
-        }
-        return controller.desiredSize > 0
+        })
       },
-      async cancel () {
-        await iterator.return()
+      cancel () {
+        return iterator.return()
       },
       type: 'bytes'
     }
@@ -652,47 +663,24 @@ function addAbortListener (signal, listener) {
   return () => signal.removeListener('abort', listener)
 }
 
-/**
- * @function
- * @param {string} value
- * @returns {string}
- */
-const toUSVString = (() => {
-  if (typeof String.prototype.toWellFormed === 'function') {
-    /**
-     * @param {string} value
-     * @returns {string}
-     */
-    return (value) => `${value}`.toWellFormed()
-  } else {
-    /**
-     * @param {string} value
-     * @returns {string}
-     */
-    return nodeUtil.toUSVString
-  }
-})()
-
-/**
- * @param {*} value
- * @returns {boolean}
- */
-// TODO: move this to webidl
-const isUSVString = (() => {
-  if (typeof String.prototype.isWellFormed === 'function') {
-    /**
-     * @param {*} value
-     * @returns {boolean}
-     */
-    return (value) => `${value}`.isWellFormed()
-  } else {
-    /**
-     * @param {*} value
-     * @returns {boolean}
-     */
-    return (value) => toUSVString(value) === `${value}`
-  }
-})()
+const validTokenChars = new Uint8Array([
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0-15
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 16-31
+  0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 0, // 32-47 (!"#$%&'()*+,-./)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, // 48-63 (0-9:;<=>?)
+  0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 64-79 (@A-O)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, // 80-95 (P-Z[\]^_)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 96-111 (`a-o)
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, // 112-127 (p-z{|}~)
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 128-143
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 144-159
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 160-175
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 176-191
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 192-207
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 208-223
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 224-239
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  // 240-255
+])
 
 /**
  * @see https://tools.ietf.org/html/rfc7230#section-3.2.6
@@ -700,42 +688,21 @@ const isUSVString = (() => {
  * @returns {boolean}
  */
 function isTokenCharCode (c) {
-  switch (c) {
-    case 0x22:
-    case 0x28:
-    case 0x29:
-    case 0x2c:
-    case 0x2f:
-    case 0x3a:
-    case 0x3b:
-    case 0x3c:
-    case 0x3d:
-    case 0x3e:
-    case 0x3f:
-    case 0x40:
-    case 0x5b:
-    case 0x5c:
-    case 0x5d:
-    case 0x7b:
-    case 0x7d:
-      // DQUOTE and "(),/:;<=>?@[\]{}"
-      return false
-    default:
-      // VCHAR %x21-7E
-      return c >= 0x21 && c <= 0x7e
-  }
+  return (validTokenChars[c] === 1)
 }
+
+const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/
 
 /**
  * @param {string} characters
  * @returns {boolean}
  */
 function isValidHTTPToken (characters) {
-  if (characters.length === 0) {
-    return false
-  }
-  for (let i = 0; i < characters.length; ++i) {
-    if (!isTokenCharCode(characters.charCodeAt(i))) {
+  if (characters.length >= 12) return tokenRegExp.test(characters)
+  if (characters.length === 0) return false
+
+  for (let i = 0; i < characters.length; i++) {
+    if (validTokenChars[characters.charCodeAt(i)] !== 1) {
       return false
     }
   }
@@ -832,6 +799,102 @@ function errorRequest (client, request, err) {
   }
 }
 
+/**
+ * @param {WeakRef<net.Socket>} socketWeakRef
+ * @param {object} opts
+ * @param {number} opts.timeout
+ * @param {string} opts.hostname
+ * @param {number} opts.port
+ * @returns {() => void}
+ */
+const setupConnectTimeout = process.platform === 'win32'
+  ? (socketWeakRef, opts) => {
+      if (!opts.timeout) {
+        return noop
+      }
+
+      let s1 = null
+      let s2 = null
+      const fastTimer = timers.setFastTimeout(() => {
+      // setImmediate is added to make sure that we prioritize socket error events over timeouts
+        s1 = setImmediate(() => {
+        // Windows needs an extra setImmediate probably due to implementation differences in the socket logic
+          s2 = setImmediate(() => onConnectTimeout(socketWeakRef.deref(), opts))
+        })
+      }, opts.timeout)
+      return () => {
+        timers.clearFastTimeout(fastTimer)
+        clearImmediate(s1)
+        clearImmediate(s2)
+      }
+    }
+  : (socketWeakRef, opts) => {
+      if (!opts.timeout) {
+        return noop
+      }
+
+      let s1 = null
+      const fastTimer = timers.setFastTimeout(() => {
+      // setImmediate is added to make sure that we prioritize socket error events over timeouts
+        s1 = setImmediate(() => {
+          onConnectTimeout(socketWeakRef.deref(), opts)
+        })
+      }, opts.timeout)
+      return () => {
+        timers.clearFastTimeout(fastTimer)
+        clearImmediate(s1)
+      }
+    }
+
+/**
+ * @param {net.Socket} socket
+ * @param {object} opts
+ * @param {number} opts.timeout
+ * @param {string} opts.hostname
+ * @param {number} opts.port
+ */
+function onConnectTimeout (socket, opts) {
+  // The socket could be already garbage collected
+  if (socket == null) {
+    return
+  }
+
+  let message = 'Connect Timeout Error'
+  if (Array.isArray(socket.autoSelectFamilyAttemptedAddresses)) {
+    message += ` (attempted addresses: ${socket.autoSelectFamilyAttemptedAddresses.join(', ')},`
+  } else {
+    message += ` (attempted address: ${opts.hostname}:${opts.port},`
+  }
+
+  message += ` timeout: ${opts.timeout}ms)`
+
+  destroy(socket, new ConnectTimeoutError(message))
+}
+
+/**
+ * @param {string} urlString
+ * @returns {string}
+ */
+function getProtocolFromUrlString (urlString) {
+  if (
+    urlString[0] === 'h' &&
+    urlString[1] === 't' &&
+    urlString[2] === 't' &&
+    urlString[3] === 'p'
+  ) {
+    switch (urlString[4]) {
+      case ':':
+        return 'http:'
+      case 's':
+        if (urlString[5] === ':') {
+          return 'https:'
+        }
+    }
+  }
+  // fallback if none of the usual suspects
+  return urlString.slice(0, urlString.indexOf(':') + 1)
+}
+
 const kEnumerableProperty = Object.create(null)
 kEnumerableProperty.enumerable = true
 
@@ -863,14 +926,13 @@ Object.setPrototypeOf(normalizedMethodRecords, null)
 module.exports = {
   kEnumerableProperty,
   isDisturbed,
-  toUSVString,
-  isUSVString,
   isBlobLike,
   parseOrigin,
   parseURL,
   getServerName,
   isStream,
   isIterable,
+  hasSafeIterator,
   isAsyncIterable,
   isDestroyed,
   headerNameToString,
@@ -890,6 +952,7 @@ module.exports = {
   assertRequestHandler,
   getSocketInfo,
   isFormDataLike,
+  pathHasQueryOrFragment,
   serializePathWithQuery,
   addAbortListener,
   isValidHTTPToken,
@@ -903,5 +966,7 @@ module.exports = {
   nodeMajor,
   nodeMinor,
   safeHTTPMethods: Object.freeze(['GET', 'HEAD', 'OPTIONS', 'TRACE']),
-  wrapRequestBody
+  wrapRequestBody,
+  setupConnectTimeout,
+  getProtocolFromUrlString
 }

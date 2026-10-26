@@ -1,7 +1,11 @@
 import { createRequire } from 'node:module';
 
-export const requireEslintTool = createRequire(new URL(import.meta.url));
-export const resolveEslintTool = (request) => requireEslintTool.resolve(request);
+export { default as globals } from 'globals';
+
+export const importEslintTool = (specifier) => import(specifier);
+
+const localRequire = createRequire(new URL(import.meta.url));
+export const resolveEslintTool = (request) => localRequire.resolve(request);
 
 export const noRestrictedSyntaxCommonAll = [
   {
@@ -15,6 +19,13 @@ export const noRestrictedSyntaxCommonAll = [
   {
     selector: "CallExpression[callee.property.name='substr']",
     message: 'Use String.prototype.slice() or String.prototype.substring() instead of String.prototype.substr()',
+  },
+  {
+    selector: `CallExpression:matches(${[
+      '[callee.name="assert"]',
+      '[callee.object.name="assert"][callee.property.name="ok"]',
+    ]})[arguments.0.type="Literal"]`,
+    message: 'Do not use a literal for the first argument of assert(), use assert.fail() instead or remove the call',
   },
 ];
 

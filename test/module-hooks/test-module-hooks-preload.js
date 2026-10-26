@@ -16,8 +16,6 @@ spawnSyncAndAssert(process.execPath,
 
 spawnSyncAndAssert(process.execPath,
                    [
-                     '--experimental-strip-types',
-                     '--no-experimental-transform-types',
                      '--require',
                      fixtures.path('module-hooks', 'register-typescript-hooks.js'),
                      fixtures.path('module-hooks', 'log-user.cts'),
@@ -38,8 +36,6 @@ spawnSyncAndAssert(process.execPath,
 
 spawnSyncAndAssert(process.execPath,
                    [
-                     '--experimental-strip-types',
-                     '--no-experimental-transform-types',
                      '--import',
                      fixtures.fileURL('module-hooks', 'register-typescript-hooks.js'),
                      fixtures.path('module-hooks', 'log-user.mts'),

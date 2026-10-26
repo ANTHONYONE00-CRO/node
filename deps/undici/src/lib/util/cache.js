@@ -1,11 +1,14 @@
 'use strict'
 
 const {
-  safeHTTPMethods
+  safeHTTPMethods,
+  pathHasQueryOrFragment,
+  hasSafeIterator
 } = require('../core/util')
 
+const { serializePathWithQuery } = require('../core/util')
+
 /**
- *
  * @param {import('../../types/dispatcher.d.ts').default.DispatchOptions} opts
  */
 function makeCacheKey (opts) {
@@ -13,34 +16,52 @@ function makeCacheKey (opts) {
     throw new Error('opts.origin is undefined')
   }
 
-  /** @type {Record<string, string[] | string>} */
-  let headers
-  if (opts.headers == null) {
-    headers = {}
-  } else if (typeof opts.headers[Symbol.iterator] === 'function') {
-    headers = {}
-    for (const x of opts.headers) {
-      if (!Array.isArray(x)) {
-        throw new Error('opts.headers is not a valid header map')
-      }
-      const [key, val] = x
-      if (typeof key !== 'string' || typeof val !== 'string') {
-        throw new Error('opts.headers is not a valid header map')
-      }
-      headers[key] = val
-    }
-  } else if (typeof opts.headers === 'object') {
-    headers = opts.headers
-  } else {
-    throw new Error('opts.headers is not an object')
+  let fullPath = opts.path || '/'
+
+  if (opts.query && !pathHasQueryOrFragment(opts.path)) {
+    fullPath = serializePathWithQuery(fullPath, opts.query)
   }
 
   return {
     origin: opts.origin.toString(),
     method: opts.method,
-    path: opts.path,
-    headers
+    path: fullPath,
+    headers: opts.headers
   }
+}
+
+/**
+ * @param {Record<string, string[] | string>}
+ * @returns {Record<string, string[] | string>}
+ */
+function normalizeHeaders (opts) {
+  let headers
+  if (opts.headers == null) {
+    headers = {}
+  } else if (typeof opts.headers === 'object') {
+    headers = {}
+
+    if (hasSafeIterator(opts.headers)) {
+      for (const x of opts.headers) {
+        if (!Array.isArray(x)) {
+          throw new Error('opts.headers is not a valid header map')
+        }
+        const [key, val] = x
+        if (typeof key !== 'string' || typeof val !== 'string') {
+          throw new Error('opts.headers is not a valid header map')
+        }
+        headers[key.toLowerCase()] = val
+      }
+    } else {
+      for (const key of Object.keys(opts.headers)) {
+        headers[key.toLowerCase()] = opts.headers[key]
+      }
+    }
+  } else {
+    throw new Error('opts.headers is not an object')
+  }
+
+  return headers
 }
 
 /**
@@ -214,7 +235,7 @@ function parseCacheControlHeader (header) {
               }
             }
           } else {
-            // Something like `no-cache=some-header`
+            // Something like `no-cache="some-header"`
             if (key in output) {
               output[key] = output[key].concat(value)
             } else {
@@ -261,19 +282,16 @@ function parseVaryHeader (varyHeader, headers) {
     return headers
   }
 
-  const output = /** @type {Record<string, string | string[]>} */ ({})
+  const output = /** @type {Record<string, string | string[] | null>} */ ({})
 
   const varyingHeaders = typeof varyHeader === 'string'
     ? varyHeader.split(',')
     : varyHeader
+
   for (const header of varyingHeaders) {
     const trimmedHeader = header.trim().toLowerCase()
 
-    if (headers[trimmedHeader]) {
-      output[trimmedHeader] = headers[trimmedHeader]
-    } else {
-      return undefined
-    }
+    output[trimmedHeader] = headers[trimmedHeader] ?? null
   }
 
   return output
@@ -348,13 +366,42 @@ function assertCacheMethods (methods, name = 'CacheMethods') {
   }
 }
 
+/**
+ * Creates a string key for request deduplication purposes.
+ * This key is used to identify in-flight requests that can be shared.
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheKey} cacheKey
+ * @param {Set<string>} [excludeHeaders] Set of lowercase header names to exclude from the key
+ * @returns {string}
+ */
+function makeDeduplicationKey (cacheKey, excludeHeaders) {
+  // Create a deterministic string key from the cache key
+  // Include origin, method, path, and sorted headers
+  let key = `${cacheKey.origin}:${cacheKey.method}:${cacheKey.path}`
+
+  if (cacheKey.headers) {
+    const sortedHeaders = Object.keys(cacheKey.headers).sort()
+    for (const header of sortedHeaders) {
+      // Skip excluded headers
+      if (excludeHeaders?.has(header.toLowerCase())) {
+        continue
+      }
+      const value = cacheKey.headers[header]
+      key += `:${header}=${Array.isArray(value) ? value.join(',') : value}`
+    }
+  }
+
+  return key
+}
+
 module.exports = {
   makeCacheKey,
+  normalizeHeaders,
   assertCacheKey,
   assertCacheValue,
   parseCacheControlHeader,
   parseVaryHeader,
   isEtagUsable,
   assertCacheMethods,
-  assertCacheStore
+  assertCacheStore,
+  makeDeduplicationKey
 }

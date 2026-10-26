@@ -221,3 +221,12 @@ fs.lstat(__filename, undefined, common.mustCall());
     },
   );
 }
+
+{
+  // Test that the throwIfNoEntry option works and returns undefined
+  const opts = { throwIfNoEntry: false };
+  assert.ok(!(fs.statSync('./wont_exists', opts)));
+  fs.stat('./wont_exists', opts, common.mustSucceed((err, stats) => {
+    assert.strictEqual(stats, undefined);
+  }));
+}

@@ -24,6 +24,7 @@ const common = require('../common');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { isMainThread } = require('worker_threads');
 
 const tmpdir = require('../common/tmpdir');
 tmpdir.refresh();
@@ -217,7 +218,7 @@ function nextdir() {
 
 // mkdirpSync dirname loop
 // XXX: windows and smartos have issues removing a directory that you're in.
-if (common.isMainThread && (common.isLinux || common.isMacOS)) {
+if (isMainThread && (common.isLinux || common.isMacOS)) {
   const pathname = tmpdir.resolve(nextdir());
   fs.mkdirSync(pathname);
   process.chdir(pathname);
@@ -231,10 +232,10 @@ if (common.isMainThread && (common.isLinux || common.isMacOS)) {
       syscall: 'mkdir',
     }
   );
-  fs.mkdir('X', common.mustNotMutateObjectDeep({ recursive: true }), (err) => {
+  fs.mkdir('X', common.mustNotMutateObjectDeep({ recursive: true }), common.mustCall((err) => {
     assert.strictEqual(err.code, 'ENOENT');
     assert.strictEqual(err.syscall, 'mkdir');
-  });
+  }));
 }
 
 // mkdirSync and mkdir require options.recursive to be a boolean.

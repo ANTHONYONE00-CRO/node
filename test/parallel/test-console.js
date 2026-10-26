@@ -31,10 +31,12 @@ const {
   restoreStderr
 } = require('../common/hijackstdio');
 
+const { isMainThread } = require('worker_threads');
+
 assert.ok(process.stdout.writable);
 assert.ok(process.stderr.writable);
 // Support legacy API
-if (common.isMainThread) {
+if (isMainThread) {
   assert.strictEqual(typeof process.stdout.fd, 'number');
   assert.strictEqual(typeof process.stderr.fd, 'number');
 }
@@ -177,11 +179,11 @@ console.timeEnd(NaN);
 // Make sure calling time twice without timeEnd doesn't reset the timer.
 console.time('test');
 const time = console._times.get('test');
-setTimeout(() => {
+setTimeout(common.mustCall(() => {
   console.time('test');
   assert.deepStrictEqual(console._times.get('test'), time);
   console.timeEnd('test');
-}, 1);
+}), 1);
 
 console.time('log1');
 console.timeLog('log1');

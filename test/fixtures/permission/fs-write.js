@@ -1,7 +1,11 @@
 'use strict';
 
 const common = require('../../common');
-common.skipIfWorker();
+const { isMainThread } = require('worker_threads');
+
+if (!isMainThread) {
+  common.skip('This test only works on a main thread');
+}
 
 const assert = require('assert');
 const fs = require('fs');
@@ -19,6 +23,15 @@ const relativeProtectedFolder = process.env.RELATIVEBLOCKEDFOLDER;
 {
   assert.ok(!process.permission.has('fs.write', blockedFolder));
   assert.ok(!process.permission.has('fs.write', blockedFile));
+}
+
+// Guarantee the error message suggest the --allow-fs-write
+{
+  fs.writeFile(blockedFile, 'example', common.expectsError({
+    message: 'Access to this API has been restricted. Use --allow-fs-write to manage permissions.',
+    code: 'ERR_ACCESS_DENIED',
+    permission: 'FileSystemWrite',
+  }));
 }
 
 // fs.writeFile
@@ -186,6 +199,7 @@ const relativeProtectedFolder = process.env.RELATIVEBLOCKEDFOLDER;
   });
 }
 
+// fs.mkdtemp
 {
   assert.throws(() => {
     fs.mkdtempSync(path.join(blockedFolder, 'any-folder'));
@@ -197,6 +211,22 @@ const relativeProtectedFolder = process.env.RELATIVEBLOCKEDFOLDER;
     code: 'ERR_ACCESS_DENIED',
     permission: 'FileSystemWrite',
   }));
+  assert.rejects(async () => {
+    await fs.promises.mkdtemp(path.join(blockedFolder, 'any-folder'));
+  }, {
+    code: 'ERR_ACCESS_DENIED',
+    permission: 'FileSystemWrite',
+  });
+}
+
+// fs.mkdtempDisposableSync
+{
+  assert.throws(() => {
+    fs.mkdtempDisposableSync(path.join(blockedFolder, 'any-folder'));
+  },{
+    code: 'ERR_ACCESS_DENIED',
+    permission: 'FileSystemWrite',
+  });
 }
 
 // fs.rename
@@ -550,6 +580,51 @@ const relativeProtectedFolder = process.env.RELATIVEBLOCKEDFOLDER;
       code: 'ERR_ACCESS_DENIED',
     }));
     fs.fchownSync(fd, 999, 999);
+  }, {
+    code: 'ERR_ACCESS_DENIED',
+  });
+}
+
+// fs.utimes with read-only fd
+{
+  assert.throws(() => {
+    // blocked file is allowed to read
+    const fd = fs.openSync(blockedFile, 'r');
+    const date = new Date();
+    date.setFullYear(2100,0,1);
+
+    fs.futimes(fd, date, date, common.expectsError({
+      code: 'ERR_ACCESS_DENIED',
+    }));
+    fs.futimesSync(fd, date, date);
+  }, {
+    code: 'ERR_ACCESS_DENIED',
+  });
+}
+
+// fs.fdatasync with read-only fd
+{
+  assert.throws(() => {
+    // blocked file is allowed to read
+    const fd = fs.openSync(blockedFile, 'r');
+    fs.fdatasync(fd, common.expectsError({
+      code: 'ERR_ACCESS_DENIED',
+    }));
+    fs.fdatasyncSync(fd);
+  }, {
+    code: 'ERR_ACCESS_DENIED',
+  });
+}
+
+// fs.fsync with read-only fd
+{
+  assert.throws(() => {
+    // blocked file is allowed to read
+    const fd = fs.openSync(blockedFile, 'r');
+    fs.fsync(fd, common.expectsError({
+      code: 'ERR_ACCESS_DENIED',
+    }));
+    fs.fsyncSync(fd);
   }, {
     code: 'ERR_ACCESS_DENIED',
   });

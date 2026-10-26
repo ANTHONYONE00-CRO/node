@@ -26,6 +26,7 @@ function getBrowserProperties() {
 /**
  * Return one of three expected values
  * https://github.com/web-platform-tests/wpt/blob/1c6ff12/tools/wptrunner/wptrunner/tests/test_update.py#L953-L958
+ * @returns {'linux'|'mac'|'win'}
  */
 function getOs() {
   switch (os.type()) {
@@ -102,6 +103,7 @@ class WPTReport {
   /**
    * Get or create a ReportResult for a test spec.
    * @param {WPTTestSpec} spec
+   * @returns {ReportResult}
    */
   getResult(spec) {
     const name = `/${spec.getRelativePath()}${spec.variant}`;
@@ -113,6 +115,9 @@ class WPTReport {
     return result;
   }
 
+  /**
+   * @returns {void}
+   */
   write() {
     this.time_end = Date.now();
     const results = Array.from(this.results.values())
@@ -191,8 +196,9 @@ class ResourceLoader {
   /**
    * Load a resource in test/fixtures/wpt specified with a URL
    * @param {string} from the path of the file loading this resource,
-   *                      relative to the WPT folder.
+   *   relative to the WPT folder.
    * @param {string} url the url of the resource being loaded.
+   * @returns {string}
    */
   read(from, url) {
     const file = this.toRealFilePath(from, url);
@@ -202,8 +208,14 @@ class ResourceLoader {
   /**
    * Load a resource in test/fixtures/wpt specified with a URL
    * @param {string} from the path of the file loading this resource,
-   *                      relative to the WPT folder.
+   *   relative to the WPT folder.
    * @param {string} url the url of the resource being loaded.
+   * @returns {Promise<{
+   *   ok: string,
+   *   arrayBuffer: function(): Buffer,
+   *   json: function(): object,
+   *   text: function(): string,
+   * }>}
    */
   async readAsFetch(from, url) {
     const file = this.toRealFilePath(from, url);
@@ -211,6 +223,7 @@ class ResourceLoader {
     return {
       ok: true,
       arrayBuffer() { return data.buffer; },
+      bytes() { return new Uint8Array(data); },
       json() { return JSON.parse(data.toString()); },
       text() { return data.toString(); },
     };
@@ -284,9 +297,9 @@ class WPTTestSpec {
 
   /**
    * @param {string} mod name of the WPT module, e.g.
-   *                     'html/webappapis/microtask-queuing'
+   *   'html/webappapis/microtask-queuing'
    * @param {string} filename path of the test, relative to mod, e.g.
-   *                          'test.any.js'
+   *   'test.any.js'
    * @param {StatusRule[]} rules
    * @param {string} variant test file variant
    */
@@ -326,6 +339,7 @@ class WPTTestSpec {
    * @param {string} mod
    * @param {string} filename
    * @param {StatusRule[]} rules
+   * @returns {ReturnType<WPTTestSpec['getMeta']>[]}
    */
   static from(mod, filename, rules) {
     const spec = new WPTTestSpec(mod, filename, rules);
@@ -399,6 +413,9 @@ class BuildRequirement {
     // Not using common.hasCrypto because of the global leak checks
     this.hasCrypto = Boolean(process.versions.openssl) &&
       !process.env.NODE_SKIP_CRYPTO;
+
+    // Not using common.hasInspector because of the global leak checks
+    this.hasInspector = Boolean(process.features.inspector);
   }
 
   /**
@@ -415,6 +432,9 @@ class BuildRequirement {
     }
     if (requires.has('crypto') && !this.hasCrypto) {
       return 'crypto';
+    }
+    if (requires.has('inspector') && !this.hasInspector) {
+      return 'inspector';
     }
     return false;
   }
@@ -436,6 +456,7 @@ class StatusLoader {
   /**
    * Grep for all .*.js file recursively in a directory.
    * @param {string} dir
+   * @returns {any[]}
    */
   grep(dir) {
     let result = [];
@@ -513,6 +534,14 @@ const limit = (concurrency) => {
 
 class WPTRunner {
   constructor(path, { concurrency = os.availableParallelism() - 1 || 1 } = {}) {
+    // RISC-V has very limited virtual address space in the currently common
+    // sv39 mode, in which we can only create a very limited number of wasm
+    // memories(27 from a fresh node repl). Limit the concurrency to avoid
+    // creating too many wasm memories that would fail.
+    if (process.arch === 'riscv64' || process.arch === 'riscv32') {
+      concurrency = Math.min(10, concurrency);
+    }
+
     this.path = path;
     this.resource = new ResourceLoader(path);
     this.concurrency = concurrency;
@@ -561,6 +590,7 @@ class WPTRunner {
 
   /**
    * @param {WPTTestSpec} spec
+   * @returns {string}
    */
   fullInitScript(spec) {
     const url = new URL(`/${spec.getRelativePath().replace(/\.js$/, '.html')}${spec.variant}`, 'http://wpt');
@@ -595,7 +625,6 @@ class WPTRunner {
     switch (name) {
       case 'Window': {
         this.globalThisInitScripts.push('globalThis.Window = Object.getPrototypeOf(globalThis).constructor;');
-        this.loadLazyGlobals();
         break;
       }
 
@@ -607,32 +636,6 @@ class WPTRunner {
 
       default: throw new Error(`Invalid globalThis type ${name}.`);
     }
-  }
-
-  loadLazyGlobals() {
-    const lazyProperties = [
-      'DOMException',
-      'Performance', 'PerformanceEntry', 'PerformanceMark', 'PerformanceMeasure',
-      'PerformanceObserver', 'PerformanceObserverEntryList', 'PerformanceResourceTiming',
-      'Blob', 'atob', 'btoa',
-      'MessageChannel', 'MessagePort', 'MessageEvent',
-      'EventTarget', 'Event',
-      'AbortController', 'AbortSignal',
-      'performance',
-      'TransformStream', 'TransformStreamDefaultController',
-      'WritableStream', 'WritableStreamDefaultController', 'WritableStreamDefaultWriter',
-      'ReadableStream', 'ReadableStreamDefaultReader',
-      'ReadableStreamBYOBReader', 'ReadableStreamBYOBRequest',
-      'ReadableByteStreamController', 'ReadableStreamDefaultController',
-      'ByteLengthQueuingStrategy', 'CountQueuingStrategy',
-      'TextEncoder', 'TextDecoder', 'TextEncoderStream', 'TextDecoderStream',
-      'CompressionStream', 'DecompressionStream',
-    ];
-    if (Boolean(process.versions.openssl) && !process.env.NODE_SKIP_CRYPTO) {
-      lazyProperties.push('crypto', 'Crypto', 'CryptoKey', 'SubtleCrypto');
-    }
-    const script = lazyProperties.map((name) => `globalThis.${name};`).join('\n');
-    this.globalThisInitScripts.push(script);
   }
 
   // TODO(joyeecheung): work with the upstream to port more tests in .html
@@ -710,7 +713,7 @@ class WPTRunner {
             spec,
             {
               status: NODE_UNCAUGHT,
-              name: 'evaluation in WPTRunner.runJsTests()',
+              name: `${err}`,
               message: err.message,
               stack: inspect(err),
             },
@@ -719,6 +722,7 @@ class WPTRunner {
           // Mark the whole test as failed in wpt.fyi report.
           reportResult?.finish('ERROR');
           this.inProgress.delete(spec);
+          this.report?.write();
         });
 
         await events.once(worker, 'exit').catch(() => {});
@@ -785,6 +789,9 @@ class WPTRunner {
         }
       }
 
+      // Write the report on clean exit. The report is also written
+      // incrementally after each spec completes (see completionCallback)
+      // so that results survive if the process is killed.
       this.report?.write();
 
       const ran = queue.length;
@@ -830,7 +837,7 @@ class WPTRunner {
    * Report the status of each specific test case (there could be multiple
    * in one test file).
    * @param {WPTTestSpec} spec
-   * @param {Test} test  The Test object returned by WPT harness
+   * @param {Test} test The Test object returned by WPT harness
    * @param {ReportResult} reportResult The report result object
    */
   resultCallback(spec, test, reportResult) {
@@ -871,6 +878,9 @@ class WPTRunner {
       reportResult?.finish();
     }
     this.inProgress.delete(spec);
+    // Write report incrementally so results survive even if the process
+    // is killed before the exit handler runs.
+    this.report?.write();
     // Always force termination of the worker. Some tests allocate resources
     // that would otherwise keep it alive.
     this.workers.get(spec).terminate();

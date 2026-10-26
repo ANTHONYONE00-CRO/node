@@ -49,10 +49,10 @@ const gcListener = { ongc() { collected = true; } };
 }
 
 function done(sock) {
-  global.gc();
-  setImmediate(() => {
+  globalThis.gc();
+  setImmediate(common.mustCall(() => {
     assert.strictEqual(collected, true);
     sock.end();
     server.close();
-  });
+  }));
 }

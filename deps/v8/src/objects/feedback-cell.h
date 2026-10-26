@@ -37,14 +37,10 @@ class FeedbackCell : public TorqueGeneratedFeedbackCell<FeedbackCell, Struct> {
   DECL_RELEASE_ACQUIRE_ACCESSORS(value, Tagged<HeapObject>)
 
   inline void clear_interrupt_budget();
-
-#ifdef V8_ENABLE_LEAPTIERING
-  inline void initialize_dispatch_handle(IsolateForSandbox isolate,
-                                         uint16_t parameter_count);
   inline void clear_dispatch_handle();
+
   inline JSDispatchHandle dispatch_handle() const;
   inline void set_dispatch_handle(JSDispatchHandle new_handle);
-#endif  // V8_ENABLE_LEAPTIERING
 
   inline void clear_padding();
   inline void reset_feedback_vector(
@@ -53,10 +49,13 @@ class FeedbackCell : public TorqueGeneratedFeedbackCell<FeedbackCell, Struct> {
                              Tagged<HeapObject> target)>>
           gc_notify_updated_slot = std::nullopt);
 
+  enum ClosureCountTransition { kNoneToOne, kOneToMany, kMany };
   // The closure count is encoded in the cell's map, which distinguishes
   // between zero, one, or many closures. This function records a new closure
   // creation by updating the map.
-  inline void IncrementClosureCount(Isolate* isolate);
+  inline ClosureCountTransition IncrementClosureCount(Isolate* isolate);
+
+  DECL_VERIFIER(FeedbackCell)
 
   class BodyDescriptor;
 

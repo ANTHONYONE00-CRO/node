@@ -48,7 +48,7 @@ std::optional<ParseResult> MakeNullLiteral(ParseResultIterator* child_results) {
 std::optional<ParseResult> MakeNumberLiteral(
     ParseResultIterator* child_results) {
   auto number = child_results->NextAs<std::string>();
-  double d = std::stod(number.c_str());
+  double d = std::stod(number);
   return ParseResult{JsonValue::From(d)};
 }
 
@@ -180,7 +180,7 @@ class JsonGrammar : public Grammar {
 
 JsonParserResult ParseJson(const std::string& input) {
   // Torque needs a CurrentSourceFile scope during parsing.
-  // As JSON lives in memory only, a unknown file scope is created.
+  // As JSON lives in memory only, an unknown file scope is created.
   SourceFileMap::Scope source_map_scope("");
   TorqueMessages::Scope messages_scope;
   CurrentSourceFile::Scope unkown_file(SourceFileMap::AddSource("<json>"));

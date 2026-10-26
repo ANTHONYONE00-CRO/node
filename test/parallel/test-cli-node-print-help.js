@@ -26,7 +26,7 @@ function validateNodePrintHelp() {
   const cliHelpOptions = [
     { compileConstant: HAVE_OPENSSL,
       flags: [ '--openssl-config=...', '--tls-cipher-list=...',
-               '--use-bundled-ca', '--use-openssl-ca',
+               '--use-bundled-ca', '--use-openssl-ca', '--use-system-ca',
                '--enable-fips', '--force-fips' ] },
     { compileConstant: NODE_HAVE_I18N_SUPPORT,
       flags: [ '--icu-data-dir=...', 'NODE_ICU_DATA' ] },
@@ -40,15 +40,15 @@ function validateNodePrintHelp() {
 
 function testForSubstring(options) {
   if (options.compileConstant) {
-    options.flags.forEach((flag) => {
-      assert.strictEqual(stdOut.indexOf(flag) !== -1, true,
-                         `Missing flag ${flag} in ${stdOut}`);
-    });
+    for (const flag of options.flags) {
+      assert.notStrictEqual(stdOut.indexOf(flag), -1,
+                            `Missing flag ${flag} in ${stdOut}`);
+    }
   } else {
-    options.flags.forEach((flag) => {
+    for (const flag of options.flags) {
       assert.strictEqual(stdOut.indexOf(flag), -1,
                          `Unexpected flag ${flag} in ${stdOut}`);
-    });
+    }
   }
 }
 

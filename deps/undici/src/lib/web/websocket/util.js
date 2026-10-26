@@ -2,7 +2,8 @@
 
 const { states, opcodes } = require('./constants')
 const { isUtf8 } = require('node:buffer')
-const { collectASequenceOfCodePointsFast, removeHTTPWhitespace } = require('../fetch/data-url')
+const { removeHTTPWhitespace } = require('../fetch/data-url')
+const { collectASequenceOfCodePointsFast } = require('../infra')
 
 /**
  * @param {number} readyState
@@ -87,7 +88,7 @@ function toArrayBuffer (buffer) {
   if (buffer.byteLength === buffer.buffer.byteLength) {
     return buffer.buffer
   }
-  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+  return new Uint8Array(buffer).buffer
 }
 
 /**
@@ -157,32 +158,6 @@ function isValidStatusCode (code) {
 }
 
 /**
- * @param {import('./websocket').Handler} handler
- * @param {number} code
- * @param {string|undefined} reason
- * @returns {void}
- */
-function failWebsocketConnection (handler, code, reason) {
-  // If _The WebSocket Connection is Established_ prior to the point where
-  // the endpoint is required to _Fail the WebSocket Connection_, the
-  // endpoint SHOULD send a Close frame with an appropriate status code
-  // (Section 7.4) before proceeding to _Close the WebSocket Connection_.
-  if (isEstablished(handler.readyState)) {
-    // avoid circular require - performance is not important here
-    const { closeWebSocketConnection } = require('./connection')
-    closeWebSocketConnection(handler, code, reason, false)
-  }
-
-  handler.controller.abort()
-
-  if (handler.socket?.destroyed === false) {
-    handler.socket.destroy()
-  }
-
-  handler.onFail(code, reason)
-}
-
-/**
  * @see https://datatracker.ietf.org/doc/html/rfc6455#section-5.5
  * @param {number} opcode
  * @returns {boolean}
@@ -232,7 +207,7 @@ function parseExtensions (extensions) {
 
   while (position.position < extensions.length) {
     const pair = collectASequenceOfCodePointsFast(';', extensions, position)
-    const [name, value = ''] = pair.split('=')
+    const [name, value = ''] = pair.split('=', 2)
 
     extensionList.set(
       removeHTTPWhitespace(name, true, false),
@@ -252,6 +227,12 @@ function parseExtensions (extensions) {
  * @returns {boolean}
  */
 function isValidClientWindowBits (value) {
+  // Must have at least one character
+  if (value.length === 0) {
+    return false
+  }
+
+  // Check all characters are ASCII digits
   for (let i = 0; i < value.length; i++) {
     const byte = value.charCodeAt(i)
 
@@ -260,7 +241,9 @@ function isValidClientWindowBits (value) {
     }
   }
 
-  return true
+  // Check numeric range: zlib requires windowBits in range 8-15
+  const num = Number.parseInt(value, 10)
+  return num >= 8 && num <= 15
 }
 
 /**
@@ -350,7 +333,6 @@ module.exports = {
   fireEvent,
   isValidSubprotocol,
   isValidStatusCode,
-  failWebsocketConnection,
   websocketMessageReceived,
   utf8Decode,
   isControlFrame,

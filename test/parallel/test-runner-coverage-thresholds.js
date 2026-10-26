@@ -61,6 +61,7 @@ for (const coverage of coverages) {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=25`,
       '--test-reporter', 'tap',
       fixture,
@@ -77,6 +78,7 @@ for (const coverage of coverages) {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=25`,
       '--test-reporter', reporter,
       fixture,
@@ -88,10 +90,31 @@ for (const coverage of coverages) {
     assert(!findCoverageFileForPid(result.pid));
   });
 
+  test(`test failing ${coverage.flag} with red color`, () => {
+    const result = spawnSync(process.execPath, [
+      '--test',
+      '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
+      `${coverage.flag}=99`,
+      '--test-reporter', 'spec',
+      fixture,
+    ], {
+      env: { ...process.env, FORCE_COLOR: '3' },
+    });
+
+    const stdout = result.stdout.toString();
+    // eslint-disable-next-line no-control-regex
+    const redColorRegex = /\u001b\[31mℹ Error: \d{2}\.\d{2}% \w+ coverage does not meet threshold of 99%/;
+    assert.match(stdout, redColorRegex, 'Expected red color code not found in diagnostic message');
+    assert.strictEqual(result.status, 1);
+    assert(!findCoverageFileForPid(result.pid));
+  });
+
   test(`test failing ${coverage.flag}`, () => {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=99`,
       '--test-reporter', 'tap',
       fixture,
@@ -108,6 +131,7 @@ for (const coverage of coverages) {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=99`,
       '--test-reporter', reporter,
       fixture,
@@ -123,6 +147,7 @@ for (const coverage of coverages) {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=101`,
       fixture,
     ]);
@@ -136,6 +161,7 @@ for (const coverage of coverages) {
     const result = spawnSync(process.execPath, [
       '--test',
       '--experimental-test-coverage',
+      '--test-coverage-exclude=!test/**',
       `${coverage.flag}=-1`,
       fixture,
     ]);

@@ -360,6 +360,17 @@ API
         On Windows not all fields are set, the unsupported fields are filled with zeroes.
         See :c:type:`uv_rusage_t` for more details.
 
+.. c:function:: int uv_getrusage_thread(uv_rusage_t* rusage)
+
+    Gets the resource usage measures for the calling thread.
+
+    .. versionadded:: 1.50.0
+
+    .. note::
+        Not supported on all platforms. May return `UV_ENOTSUP`.
+        On macOS and Windows not all fields are set, the unsupported fields are filled with zeroes.
+        See :c:type:`uv_rusage_t` for more details.
+
 .. c:function:: uv_pid_t uv_os_getpid(void)
 
     Returns the current process ID.
@@ -510,6 +521,10 @@ API
 
     Gets the executable path. You *must* call `uv_setup_args` before calling
     this function.
+
+    Be careful in setuid executables. On some platforms the executable path
+    is an arbitrary string that is controlled by the user. On other platforms
+    environment variables are consulted that may be under control of the user.
 
 .. c:function:: int uv_cwd(char* buffer, size_t* size)
 
@@ -881,6 +896,16 @@ API
 
     .. versionadded:: 1.34.0
 
+.. code-block:: c
+    #include <uv.h>
+    #include <stdio.h>
+    int main() {
+        printf("Sleeping for 1 second...\n");
+        uv_sleep(1000);
+        printf("Awake!\n");
+        return 0;
+    }
+
 String manipulation functions
 -----------------------------
 
@@ -902,7 +927,7 @@ is not complete.
     `utf16_len` count (in characters) gives the length of `utf16`. If `utf16`
     is NUL terminated, `utf16_len` can be set to -1, otherwise it must be
     specified. If `wtf8_ptr` is `NULL`, no result will be computed, but the
-    length (equal to `uv_utf16_length_as_wtf8`) will be stored in `wtf8_ptr`.
+    length (equal to `uv_utf16_length_as_wtf8`) will be stored in `wtf8_len_ptr`.
     If `*wtf8_ptr` is `NULL`, space for the conversion will be allocated and
     returned in `wtf8_ptr` and the length will be returned in `wtf8_len_ptr`.
     Otherwise, the length of `*wtf8_ptr` must be passed in `wtf8_len_ptr`. The

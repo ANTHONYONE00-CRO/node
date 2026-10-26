@@ -38,6 +38,7 @@
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/execution/simulator.h"
 #include "src/heap/factory.h"
+#include "src/numbers/conversions.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "src/utils/ostreams.h"
@@ -80,7 +81,8 @@ TEST_F(MacroAssemblerX64Test, TestHardAbort) {
   buffer->MakeExecutable();
   auto f = GeneratedCode<void>::FromBuffer(isolate(), buffer->start());
 
-  ASSERT_DEATH_IF_SUPPORTED({ f.Call(); }, "abort: no reason");
+  ASSERT_DEATH_IF_SUPPORTED(
+      { f.Call(); }, v8_flags.debug_code ? "abort: no reason" : "");
 }
 
 TEST_F(MacroAssemblerX64Test, TestCheck) {
@@ -103,7 +105,8 @@ TEST_F(MacroAssemblerX64Test, TestCheck) {
 
   f.Call(0);
   f.Call(18);
-  ASSERT_DEATH_IF_SUPPORTED({ f.Call(17); }, "abort: no reason");
+  ASSERT_DEATH_IF_SUPPORTED(
+      { f.Call(17); }, v8_flags.debug_code ? "abort: no reason" : "");
 }
 
 #undef __
@@ -135,6 +138,7 @@ using F12 = int(uint8_t*, uint16_t*);
 using F13 = int(float*, int32_t*);
 using F14 = int(uint16_t*, int16_t*);
 using F15 = int(uint16_t*, uint16_t*);
+using F16 = int(double*, uint16_t*);
 
 #define __ masm->
 
@@ -377,42 +381,49 @@ TEST_F(MacroAssemblerX64Test, SmiTag) {
   __ cmp_tagged(rcx, rdx);
   __ j(not_equal, &exit);
 
-  // Different target register.
+  // Different target registers. Make sure to check that using register rcx
+  // is okay even though that is also the src register in the calls to SmiTag.
+  Register targets[2] = {r8, rcx};
+  for (size_t i = 0; i < arraysize(targets); i++) {
+    Register target = targets[i];
+    CHECK_NE(rax, target);
+    CHECK_NE(rdx, target);
 
-  __ movq(rax, Immediate(6));  // Test number.
-  __ movq(rcx, Immediate(0));
-  __ SmiTag(r8, rcx);
-  __ Move(rdx, Smi::zero().ptr());
-  __ cmp_tagged(r8, rdx);
-  __ j(not_equal, &exit);
+    __ movq(rax, Immediate(6));  // Test number.
+    __ movq(rcx, Immediate(0));
+    __ SmiTag(target, rcx);
+    __ Move(rdx, Smi::zero().ptr());
+    __ cmp_tagged(target, rdx);
+    __ j(not_equal, &exit);
 
-  __ movq(rax, Immediate(7));  // Test number.
-  __ movq(rcx, Immediate(1024));
-  __ SmiTag(r8, rcx);
-  __ Move(rdx, Smi::FromInt(1024).ptr());
-  __ cmp_tagged(r8, rdx);
-  __ j(not_equal, &exit);
+    __ movq(rax, Immediate(7));  // Test number.
+    __ movq(rcx, Immediate(1024));
+    __ SmiTag(target, rcx);
+    __ Move(rdx, Smi::FromInt(1024).ptr());
+    __ cmp_tagged(target, rdx);
+    __ j(not_equal, &exit);
 
-  __ movq(rax, Immediate(8));  // Test number.
-  __ movq(rcx, Immediate(-1));
-  __ SmiTag(r8, rcx);
-  __ Move(rdx, Smi::FromInt(-1).ptr());
-  __ cmp_tagged(r8, rdx);
-  __ j(not_equal, &exit);
+    __ movq(rax, Immediate(8));  // Test number.
+    __ movq(rcx, Immediate(-1));
+    __ SmiTag(target, rcx);
+    __ Move(rdx, Smi::FromInt(-1).ptr());
+    __ cmp_tagged(target, rdx);
+    __ j(not_equal, &exit);
 
-  __ movq(rax, Immediate(9));  // Test number.
-  __ movq(rcx, Immediate(Smi::kMaxValue));
-  __ SmiTag(r8, rcx);
-  __ Move(rdx, Smi::FromInt(Smi::kMaxValue).ptr());
-  __ cmp_tagged(r8, rdx);
-  __ j(not_equal, &exit);
+    __ movq(rax, Immediate(9));  // Test number.
+    __ movq(rcx, Immediate(Smi::kMaxValue));
+    __ SmiTag(target, rcx);
+    __ Move(rdx, Smi::FromInt(Smi::kMaxValue).ptr());
+    __ cmp_tagged(target, rdx);
+    __ j(not_equal, &exit);
 
-  __ movq(rax, Immediate(10));  // Test number.
-  __ movq(rcx, Immediate(Smi::kMinValue));
-  __ SmiTag(r8, rcx);
-  __ Move(rdx, Smi::FromInt(Smi::kMinValue).ptr());
-  __ cmp_tagged(r8, rdx);
-  __ j(not_equal, &exit);
+    __ movq(rax, Immediate(10));  // Test number.
+    __ movq(rcx, Immediate(Smi::kMinValue));
+    __ SmiTag(target, rcx);
+    __ Move(rdx, Smi::FromInt(Smi::kMinValue).ptr());
+    __ cmp_tagged(target, rdx);
+    __ j(not_equal, &exit);
+  }
 
   __ xorq(rax, rax);  // Success.
   __ bind(&exit);
@@ -1158,6 +1169,122 @@ void TestFloat64x2Neg(MacroAssembler* masm, Label* exit, double x, double y) {
   __ addq(rsp, Immediate(kSimd128Size));
 }
 
+template <bool dst_same_as_src>
+void TestFloat64x4Neg(MacroAssembler* masm, Label* exit, double x, double y,
+                      double z, double w) {
+  if (!CpuFeatures::IsSupported(AVX) || !CpuFeatures::IsSupported(AVX2)) return;
+
+  __ AllocateStackSpace(kSimd256Size);
+
+  CpuFeatureScope avx_scope(masm, AVX);
+  __ Move(xmm1, x);
+  __ Movsd(Operand(rsp, 0 * kDoubleSize), xmm1);
+  __ Move(xmm2, y);
+  __ Movsd(Operand(rsp, 1 * kDoubleSize), xmm2);
+  __ Move(xmm3, z);
+  __ Movsd(Operand(rsp, 2 * kDoubleSize), xmm3);
+  __ Move(xmm4, w);
+  __ Movsd(Operand(rsp, 3 * kDoubleSize), xmm4);
+  __ vmovupd(ymm0, Operand(rsp, 0));
+
+  if (dst_same_as_src) {
+    __ Negpd(ymm0, ymm0, kScratchSimd256Reg);
+    __ vmovupd(Operand(rsp, 0), ymm0);
+  } else {
+    __ Negpd(ymm1, ymm0, kScratchSimd256Reg);
+    __ vmovupd(Operand(rsp, 0), ymm1);
+  }
+
+  __ incq(rax);
+  __ Move(xmm1, -x);
+  __ Ucomisd(xmm1, Operand(rsp, 0 * kDoubleSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm2, -y);
+  __ Ucomisd(xmm2, Operand(rsp, 1 * kDoubleSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm2, -z);
+  __ Ucomisd(xmm2, Operand(rsp, 2 * kDoubleSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm2, -w);
+  __ Ucomisd(xmm2, Operand(rsp, 3 * kDoubleSize));
+  __ j(not_equal, exit);
+
+  __ addq(rsp, Immediate(kSimd256Size));
+}
+
+template <bool dst_same_as_src>
+void TestFloat32x8Neg(MacroAssembler* masm, Label* exit, float x, float y,
+                      float z, float w, float a, float b, float c, float d) {
+  if (!CpuFeatures::IsSupported(AVX) || !CpuFeatures::IsSupported(AVX2)) return;
+
+  __ AllocateStackSpace(kSimd256Size);
+
+  CpuFeatureScope avx_scope(masm, AVX);
+  __ Move(xmm1, x);
+  __ Movss(Operand(rsp, 0 * kFloatSize), xmm1);
+  __ Move(xmm2, y);
+  __ Movss(Operand(rsp, 1 * kFloatSize), xmm2);
+  __ Move(xmm3, z);
+  __ Movss(Operand(rsp, 2 * kFloatSize), xmm3);
+  __ Move(xmm4, w);
+  __ Movss(Operand(rsp, 3 * kFloatSize), xmm4);
+  __ Move(xmm5, a);
+  __ Movss(Operand(rsp, 4 * kFloatSize), xmm5);
+  __ Move(xmm6, b);
+  __ Movss(Operand(rsp, 5 * kFloatSize), xmm6);
+  __ Move(xmm7, c);
+  __ Movss(Operand(rsp, 6 * kFloatSize), xmm7);
+  __ Move(xmm8, d);
+  __ Movss(Operand(rsp, 7 * kFloatSize), xmm8);
+  __ vmovups(ymm0, Operand(rsp, 0));
+
+  if (dst_same_as_src) {
+    __ Negps(ymm0, ymm0, kScratchSimd256Reg);
+    __ vmovups(Operand(rsp, 0), ymm0);
+  } else {
+    __ Negps(ymm1, ymm0, kScratchSimd256Reg);
+    __ vmovups(Operand(rsp, 0), ymm1);
+  }
+
+  __ incq(rax);
+  __ Move(xmm1, -x);
+  __ Ucomiss(xmm1, Operand(rsp, 0 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm2, -y);
+  __ Ucomiss(xmm2, Operand(rsp, 1 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm3, -z);
+  __ Ucomiss(xmm3, Operand(rsp, 2 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm4, -w);
+  __ Ucomiss(xmm4, Operand(rsp, 3 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm5, -a);
+  __ Ucomiss(xmm5, Operand(rsp, 4 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm6, -b);
+  __ Ucomiss(xmm6, Operand(rsp, 5 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm7, -c);
+  __ Ucomiss(xmm7, Operand(rsp, 6 * kFloatSize));
+  __ j(not_equal, exit);
+  __ incq(rax);
+  __ Move(xmm8, -d);
+  __ Ucomiss(xmm8, Operand(rsp, 7 * kFloatSize));
+  __ j(not_equal, exit);
+
+  __ addq(rsp, Immediate(kSimd256Size));
+}
+
 TEST_F(MacroAssemblerX64Test, SIMDMacros) {
   Isolate* isolate = i_isolate();
   HandleScope handles(isolate);
@@ -1178,6 +1305,15 @@ TEST_F(MacroAssemblerX64Test, SIMDMacros) {
   TestFloat32x4Neg(masm, &exit, 1.5, -1.5, 0.5, -0.5);
   TestFloat64x2Abs(masm, &exit, 1.75, -1.75);
   TestFloat64x2Neg(masm, &exit, 1.75, -1.75);
+
+  // There are two different paths in codegen, depend on the equality of dst and
+  // src register.
+  TestFloat64x4Neg<true>(masm, &exit, 1.75, -1.75, 0.5, -0.5);
+  TestFloat64x4Neg<false>(masm, &exit, 1.75, -1.75, 0.5, -0.5);
+  TestFloat32x8Neg<true>(masm, &exit, 1.75, -1.75, 0.5, -0.5, NaN, -NaN, inf,
+                         -inf);
+  TestFloat32x8Neg<false>(masm, &exit, 1.5, -1.5, 0.5, -0.5, NaN, -NaN, inf,
+                          -inf);
 
   __ xorq(rax, rax);  // Success.
   __ bind(&exit);
@@ -2398,6 +2534,101 @@ TEST_F(MacroAssemblerX64Test, I16x8TruncF16x8U) {
     for (int i = 0; i < 8; i++) {
       CHECK_EQ(output[i], convert_to_uint(fp16_ieee_to_fp32_value(input[i])));
     }
+  }
+}
+
+TEST_F(MacroAssemblerX64Test, Cvtpd2ph) {
+  if (!CpuFeatures::IsSupported(F16C) || !CpuFeatures::IsSupported(AVX)) {
+    return;
+  }
+
+  Isolate* isolate = i_isolate();
+  HandleScope handles(isolate);
+  auto buffer = AllocateAssemblerBuffer();
+  MacroAssembler assembler(isolate, v8::internal::CodeObjectRequired::kYes,
+                           buffer->CreateView());
+
+  MacroAssembler* masm = &assembler;
+
+  __ set_root_array_available(false);
+
+  const XMMRegister dst = xmm0;
+  const XMMRegister src = xmm1;
+  const Register tmp = r8;
+
+  CpuFeatureScope f16c_scope(masm, F16C);
+  CpuFeatureScope avx_scope(masm, AVX);
+
+  __ vmovsd(src, Operand(kCArgRegs[0], 0));
+  __ Cvtpd2ph(dst, src, tmp);
+  __ vmovss(Operand(kCArgRegs[1], 0), dst);
+  __ ret(0);
+
+  CodeDesc desc;
+  __ GetCode(i_isolate(), &desc);
+
+  PrintCode(isolate, desc);
+
+  buffer->MakeExecutable();
+  auto f = GeneratedCode<F16>::FromBuffer(i_isolate(), buffer->start());
+
+  std::vector<double> test_cases = {
+      // Float16 subnormal numbers.
+      8.940696716308592e-8, 0.000060945749282836914, 0.00006094574928283692,
+      // Float16 normal numbers.
+      0.000061035154431010596, 0.00006103515625, 0.0000610649585723877,
+      0.00006106495857238771, 0.00006112456321716307, -999.75,
+      // Underflow to zero.
+      2.980232594040899e-8, 2.9802320611338473e-8,
+      // Overflow to infinity.
+      65536,
+      // An integer which rounds down under ties-to-even when cast to
+      // float16.
+      2049,
+      // An integer which rounds up under ties-to-even when cast to
+      // float16.
+      2051,
+      // Smallest normal float16.
+      0.00006103515625,
+      // Largest subnormal float16.
+      0.00006097555160522461,
+      // Smallest float16.
+      5.960464477539063e-8,
+      // Largest double which rounds to 0 when cast to
+      // float16.
+      2.9802322387695312e-8,
+      // Smallest double which does not round to 0 when
+      // cast to float16.
+      2.980232238769532e-8,
+      // A double which rounds up to a subnormal under
+      // ties-to-even when cast to float16.
+      8.940696716308594e-8,
+      // A double which rounds down to a subnormal under
+      // ties-to-even when cast to float16.
+      1.4901161193847656e-7,
+      // The next double above the one on the previous
+      // line one.
+      1.490116119384766e-7,
+      // Max finite float16.
+      65504,
+      // Smallest double which rounds to infinity when cast to float16.
+      65520,
+      // Largest double which does not round to infinity
+      // when cast to float16.
+      65519.99999999999,
+      // Smallest double which rounds to a
+      // non-subnormal when cast to float16.
+      0.000061005353927612305,
+      // Largest double which rounds to a subnormal when
+      // cast to float16.
+      0.0000610053539276123};
+  double input;
+  uint16_t output[2];
+
+  for (const auto& val : test_cases) {
+    input = val;
+    f.Call(&input, output);
+    CHECK_EQ(output[0], DoubleToFloat16(val));
   }
 }
 

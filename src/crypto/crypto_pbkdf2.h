@@ -30,7 +30,7 @@ struct PBKDF2Config final : public MemoryRetainer {
   ByteSource salt;
   int32_t iterations;
   int32_t length;
-  const EVP_MD* digest = nullptr;
+  ncrypto::Digest digest;
 
   PBKDF2Config() = default;
 
@@ -55,10 +55,10 @@ struct PBKDF2Traits final {
       unsigned int offset,
       PBKDF2Config* params);
 
-  static bool DeriveBits(
-      Environment* env,
-      const PBKDF2Config& params,
-      ByteSource* out);
+  static bool DeriveBits(Environment* env,
+                         const PBKDF2Config& params,
+                         ByteSource* out,
+                         CryptoJobMode mode);
 
   static v8::MaybeLocal<v8::Value> EncodeOutput(Environment* env,
                                                 const PBKDF2Config& params,

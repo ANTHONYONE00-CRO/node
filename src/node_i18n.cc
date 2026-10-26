@@ -104,14 +104,15 @@ namespace {
 
 template <typename T>
 MaybeLocal<Object> ToBufferEndian(Environment* env, MaybeStackBuffer<T>* buf) {
-  MaybeLocal<Object> ret = Buffer::New(env, buf);
-  if (ret.IsEmpty())
-    return ret;
+  Local<Object> ret;
+  if (!Buffer::New(env, buf).ToLocal(&ret)) {
+    return {};
+  }
 
   static_assert(sizeof(T) == 1 || sizeof(T) == 2,
                 "Currently only one- or two-byte buffers are supported");
   if constexpr (sizeof(T) > 1 && IsBigEndian()) {
-    SPREAD_BUFFER_ARG(ret.ToLocalChecked(), retbuf);
+    SPREAD_BUFFER_ARG(ret, retbuf);
     CHECK(nbytes::SwapBytes16(retbuf_data, retbuf_length));
   }
 
@@ -173,7 +174,7 @@ MaybeLocal<Object> TranscodeLatin1ToUcs2(Environment* env,
                                          const char* source,
                                          const size_t source_length,
                                          UErrorCode* status) {
-  MaybeStackBuffer<UChar> destbuf(source_length);
+  MaybeStackBuffer<char16_t> destbuf(source_length);
   auto actual_length =
       simdutf::convert_latin1_to_utf16le(source, source_length, destbuf.out());
   if (actual_length == 0) {
@@ -217,7 +218,7 @@ MaybeLocal<Object> TranscodeUcs2FromUtf8(Environment* env,
                                          UErrorCode* status) {
   size_t expected_utf16_length =
       simdutf::utf16_length_from_utf8(source, source_length);
-  MaybeStackBuffer<UChar> destbuf(expected_utf16_length);
+  MaybeStackBuffer<char16_t> destbuf(expected_utf16_length);
   auto actual_length =
       simdutf::convert_utf8_to_utf16le(source, source_length, destbuf.out());
 
@@ -317,19 +318,19 @@ void Transcode(const FunctionCallbackInfo<Value>&args) {
     status = U_ILLEGAL_ARGUMENT_ERROR;
   }
 
-  if (result.IsEmpty())
-    return args.GetReturnValue().Set(status);
+  Local<Object> res;
+  if (result.ToLocal(&res)) {
+    return args.GetReturnValue().Set(res);
+  }
 
-  return args.GetReturnValue().Set(result.ToLocalChecked());
+  return args.GetReturnValue().Set(status);
 }
 
 void ICUErrorName(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
   CHECK(args[0]->IsInt32());
   UErrorCode status = static_cast<UErrorCode>(args[0].As<Int32>()->Value());
   args.GetReturnValue().Set(
-      String::NewFromUtf8(env->isolate(),
-                          u_errorName(status)).ToLocalChecked());
+      OneByteString(args.GetIsolate(), u_errorName(status)));
 }
 
 }  // anonymous namespace
@@ -371,10 +372,8 @@ size_t Converter::max_char_size() const {
 }
 
 void ConverterObject::Has(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-
   CHECK_GE(args.Length(), 1);
-  Utf8Value label(env->isolate(), args[0]);
+  Utf8Value label(args.GetIsolate(), args[0]);
 
   UErrorCode status = U_ZERO_ERROR;
   ConverterPointer conv(ucnv_open(*label, &status));
@@ -390,7 +389,10 @@ void ConverterObject::Create(const FunctionCallbackInfo<Value>& args) {
 
   CHECK_GE(args.Length(), 2);
   Utf8Value label(env->isolate(), args[0]);
-  int flags = args[1]->Uint32Value(env->context()).ToChecked();
+  uint32_t flags;
+  if (!args[1]->Uint32Value(env->context()).To(&flags)) {
+    return;
+  }
   bool fatal =
       (flags & CONVERTER_FLAGS_FATAL) == CONVERTER_FLAGS_FATAL;
 
@@ -430,7 +432,10 @@ void ConverterObject::Decode(const FunctionCallbackInfo<Value>& args) {
   }
 
   ArrayBufferViewContents<char> input(args[1]);
-  int flags = args[2]->Uint32Value(env->context()).ToChecked();
+  uint32_t flags;
+  if (!args[2]->Uint32Value(env->context()).To(&flags)) {
+    return;
+  }
 
   CHECK(args[3]->IsString());
   Local<String> from_encoding = args[3].As<String>();
@@ -493,7 +498,6 @@ void ConverterObject::Decode(const FunctionCallbackInfo<Value>& args) {
       }
     }
 
-    Local<Value> error;
     UChar* output = result.out();
     size_t beginning = 0;
     size_t length = result.length() * sizeof(UChar);
@@ -510,11 +514,9 @@ void ConverterObject::Decode(const FunctionCallbackInfo<Value>& args) {
       CHECK(nbytes::SwapBytes16(value, length));
     }
 
-    MaybeLocal<Value> encoded =
-        StringBytes::Encode(env->isolate(), value, length, UCS2, &error);
-
     Local<Value> ret;
-    if (encoded.ToLocal(&ret)) {
+    if (StringBytes::Encode(env->isolate(), value, length, UCS2)
+            .ToLocal(&ret)) {
       args.GetReturnValue().Set(ret);
       return;
     }
@@ -641,13 +643,12 @@ static int GetColumnWidth(UChar32 codepoint,
 
 // Returns the column width for the given String.
 static void GetStringWidth(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
   CHECK(args[0]->IsString());
 
   bool ambiguous_as_full_width = args[1]->IsTrue();
   bool expand_emoji_sequence = !args[2]->IsBoolean() || args[2]->IsTrue();
 
-  TwoByteValue value(env->isolate(), args[0]);
+  TwoByteValue value(args.GetIsolate(), args[0]);
   // reinterpret_cast is required by windows to compile
   UChar* str = reinterpret_cast<UChar*>(*value);
   static_assert(sizeof(*str) == sizeof(**value),

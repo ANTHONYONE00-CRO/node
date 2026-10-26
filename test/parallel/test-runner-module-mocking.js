@@ -1,8 +1,9 @@
 // Flags: --experimental-test-module-mocks --experimental-require-module
 'use strict';
 const common = require('../common');
+const { isMainThread } = require('worker_threads');
 
-if (!common.isMainThread) {
+if (!isMainThread) {
   common.skip('registering customization hooks in Workers does not work');
 }
 
@@ -361,6 +362,34 @@ test('ESM mocking with namedExports option', async (t) => {
 
     t.mock.reset();
     assert.strictEqual(original, await import(fixture));
+  });
+});
+
+test('JSON mocking', async (t) => {
+  await t.test('with defaultExport', async (t) => {
+    const fixturePath = fixtures.path('module-mocking', 'basic.json');
+    const fixture = pathToFileURL(fixturePath);
+    const { default: original } = await import(fixture, { with: { type: 'json' } });
+
+    assert.deepStrictEqual(original, { foo: 'bar' });
+
+    const defaultExport = { qux: 'zed' };
+
+    t.mock.module(fixture, { defaultExport });
+
+    const { default: mocked } = await import(fixture, { with: { type: 'json' } });
+
+    assert.deepStrictEqual(mocked, defaultExport);
+  });
+
+  await t.test('throws without appropriate import attributes', async (t) => {
+    const fixturePath = fixtures.path('module-mocking', 'basic.json');
+    const fixture = pathToFileURL(fixturePath);
+
+    const defaultExport = { qux: 'zed' };
+    t.mock.module(fixture, { defaultExport });
+
+    await assert.rejects(() => import(fixture), /import attribute/);
   });
 });
 

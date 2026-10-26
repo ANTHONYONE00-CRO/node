@@ -270,6 +270,11 @@ using Http2Header = NgHeader<Http2HeaderTraits>;
 class Http2Stream : public AsyncWrap,
                     public StreamBase {
  public:
+  enum InternalFields {
+    kInternalFieldCount = std::max<uint32_t>(AsyncWrap::kInternalFieldCount,
+                                             StreamBase::kInternalFieldCount),
+  };
+
   static Http2Stream* New(
       Http2Session* session,
       int32_t id,
@@ -692,9 +697,7 @@ class Http2Session : public AsyncWrap,
 
   bool has_pending_rststream(int32_t stream_id) {
     return pending_rst_streams_.end() !=
-        std::find(pending_rst_streams_.begin(),
-            pending_rst_streams_.end(),
-            stream_id);
+           std::ranges::find(pending_rst_streams_, stream_id);
   }
 
   // Handle reads/writes from the underlying network transport.
@@ -712,6 +715,7 @@ class Http2Session : public AsyncWrap,
   static void Consume(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Receive(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Destroy(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void HasPendingData(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Settings(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Request(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void SetNextStreamID(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -723,6 +727,7 @@ class Http2Session : public AsyncWrap,
   static void Ping(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void AltSvc(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Origin(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void SetGracefulClose(const v8::FunctionCallbackInfo<v8::Value>& args);
 
   template <get_setting fn, bool local>
   static void RefreshSettings(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -735,6 +740,7 @@ class Http2Session : public AsyncWrap,
 
   BaseObjectPtr<Http2Ping> PopPing();
   bool AddPing(const uint8_t* data, v8::Local<v8::Function> callback);
+  bool HasPendingData() const;
 
   BaseObjectPtr<Http2Settings> PopSettings();
   bool AddSettings(v8::Local<v8::Function> callback);
@@ -784,6 +790,13 @@ class Http2Session : public AsyncWrap,
   };
 
   Statistics statistics_ = {};
+
+  bool IsGracefulCloseInitiated() const {
+    return graceful_close_initiated_;
+  }
+  void SetGracefulCloseInitiated(bool value) {
+    graceful_close_initiated_ = value;
+  }
 
  private:
   void EmitStatistics();
@@ -951,8 +964,13 @@ class Http2Session : public AsyncWrap,
   void CopyDataIntoOutgoing(const uint8_t* src, size_t src_length);
   void ClearOutgoing(int status);
 
+  void MaybeNotifyGracefulCloseComplete();
+
   friend class Http2Scope;
   friend class Http2StreamListener;
+
+  // Flag to indicate that JavaScript has initiated a graceful closure
+  bool graceful_close_initiated_ = false;
 };
 
 struct Http2SessionPerformanceEntryTraits {
